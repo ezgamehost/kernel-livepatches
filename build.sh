@@ -1,0 +1,132 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+#
+# Build livepatch-xfrm-pcpu.ko and its .deb for Ubuntu 7.0.0-38-generic, then
+# run the static compatibility check against the stock kernel.
+#
+# Runs as root inside ubuntu:26.04 (amd64), see README.md:
+#   build.sh              full build (several hours on 4 CPUs)
+#   build.sh --preflight  toolchain, source, config and patch checks only
+#
+# Env: WORK (default /build) holds the tree, OUT (default ./out) the results,
+# HOST_UID chowns OUT at the end. Mount the host CA bundle at /hostca.pem
+# (see snapshot-apt.sh).
+set -euo pipefail
+
+SNAPSHOT=20261018T000000Z # also in snapshot-apt.sh
+KVER=7.0.0-38-generic
+KPKG=7.0.0-38.38
+SIG="Ubuntu 7.0.0-38.38-generic 7.0.14"
+GCC_PKG=15.2.0-16ubuntu1
+BINUTILS_PKG=2.46-3ubuntu2
+GCC_TEXT="x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+LD_TEXT="GNU ld (GNU Binutils for Ubuntu) 2.46"
+NAME=livepatch-xfrm-pcpu
+DEB_NAME=ezgh-livepatch-xfrm-pcpu-$KVER
+DEB_VER=1.0.0
+
+REPO=$(cd "$(dirname "$0")" && pwd)
+WORK=${WORK:-/build}
+OUT=${OUT:-$REPO/out}
+
+die() { echo "error: $*" >&2; exit 1; }
+want() { [ "$2" = "$3" ] || die "$1: got '$2', want '$3'"; echo "ok $1: $2"; }
+
+[ "$(dpkg --print-architecture)" = amd64 ] || die "must run on amd64"
+[ "$(id -u)" = 0 ] || die "must run as root (in a container)"
+
+# --- Ubuntu snapshot only -------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+"$REPO/snapshot-apt.sh"
+apt-get build-dep -y -q --arch-only "linux=$KPKG"
+apt-get install -y -q --no-install-recommends dpkg-dev git gawk kmod zstd
+
+# --- Toolchain must be the one that built the stock kernel ----------------
+want "gcc-15 package" "$(dpkg-query -W -f='${Version}' gcc-15)" "$GCC_PKG"
+want "binutils package" "$(dpkg-query -W -f='${Version}' binutils-x86-64-linux-gnu)" "$BINUTILS_PKG"
+want "gcc --version" "$(x86_64-linux-gnu-gcc --version | head -1)" "$GCC_TEXT"
+want "ld --version" "$(x86_64-linux-gnu-ld --version | head -1)" "$LD_TEXT"
+
+# --- Source and stock binaries (apt verifies every hash) ------------------
+mkdir -p "$WORK/stock" "$WORK/patches" "$OUT"
+cd "$WORK"
+apt-get source -q --download-only "linux=$KPKG"
+rm -rf linux && dpkg-source -x "linux_$KPKG.dsc" linux >/dev/null
+SRC=$WORK/linux
+apt-get download -q "linux-modules-$KVER=$KPKG" "linux-headers-$KVER=$KPKG"
+for d in linux-modules-"$KVER"_*.deb linux-headers-"$KVER"_*.deb; do dpkg-deb -x "$d" stock; done
+STOCK_CONFIG=$WORK/stock/boot/config-$KVER
+cmp "$STOCK_CONFIG" "$WORK/stock/usr/src/linux-headers-$KVER/.config"
+
+# --- Ubuntu's kmake variables (debian/rules.d/0-common-vars.mk) -----------
+# Variable definitions in MAKEFLAGS act as command-line overrides for every
+# make that klp-build runs.
+export MAKEFLAGS="ARCH=x86 CROSS_COMPILE=x86_64-linux-gnu- HOSTCC=x86_64-linux-gnu-gcc CC=x86_64-linux-gnu-gcc RUSTC=rustc HOSTRUSTC=rustc RUSTFMT=rustfmt BINDGEN=bindgen KERNELRELEASE=$KVER CONFIG_DEBUG_SECTION_MISMATCH=y KBUILD_BUILD_VERSION=38 CFLAGS_MODULE=-DPKG_ABI=38 PYTHON=/usr/bin/python3"
+cd "$SRC"
+cp "$STOCK_CONFIG" .config
+make -s olddefconfig
+diff -u "$STOCK_CONFIG" .config || die "make olddefconfig changed the stock config"
+echo "ok olddefconfig: no change to config-$KVER"
+want "kernelrelease" "$(make -s kernelrelease)" "$KVER"
+want "version signature" "$(sed -n 's/^CONFIG_VERSION_SIGNATURE="\(.*\)"$/\1/p' .config)" "$SIG"
+
+cp "$REPO"/patches/*.patch "$WORK/patches/"
+for p in "$WORK"/patches/*.patch; do
+	sed -n '/^-- /q;p' "$p" | git apply --check -v
+done
+git apply --check <(for p in "$WORK"/patches/*.patch; do sed -n '/^-- /q;p' "$p"; done)
+echo "ok patches: apply to the Ubuntu tree"
+if [ "${1:-}" = --preflight ]; then echo "preflight OK"; exit 0; fi
+
+# --- Build ------------------------------------------------------------------
+# --no-replace: never displace another livepatch loaded on the host.
+./scripts/livepatch/klp-build --no-replace --keep-tmp -j"$(nproc)" \
+	-o "$OUT/$NAME.ko" "$WORK"/patches/*.patch 2>&1 | tee "$OUT/klp-build.log"
+cp klp-tmp/diff/diff.log "$OUT/klp-diff.log"
+
+"$REPO/check.sh" "$OUT/$NAME.ko" "$WORK/stock" "$SRC" | tee "$OUT/static-check.txt"
+
+# --- Package ----------------------------------------------------------------
+PKG=$WORK/pkg
+rm -rf "$PKG"
+install -D -m 0644 "$OUT/$NAME.ko" "$PKG/usr/lib/modules/$KVER/updates/ezgh/$NAME.ko"
+install -d "$PKG/usr/lib/modules-load.d" "$PKG/DEBIAN"
+echo "${NAME//-/_}" > "$PKG/usr/lib/modules-load.d/$NAME.conf"
+install -m 0755 "$REPO"/packaging/{postinst,prerm,postrm} "$PKG/DEBIAN/"
+cat > "$PKG/DEBIAN/control" <<EOF
+Package: $DEB_NAME
+Version: $DEB_VER
+Architecture: amd64
+Maintainer: EZGH Cloud <matthewzhaocc@gmail.com>
+Depends: linux-image-$KVER (= $KPKG), kmod
+Section: kernel
+Priority: optional
+Homepage: https://github.com/ezgamehost/kernel-livepatches
+Description: livepatch for xfrm per-CPU SA fallback bugs ($SIG)
+ Livepatch module $NAME (sysfs ${NAME//-/_}) carrying two xfrm_state fixes
+ for per-CPU IPsec SAs (Fixes: 1ddf9916ac09). Loads at install when the
+ running kernel is exactly $SIG, and at every boot of $KVER.
+EOF
+DEB=$OUT/${DEB_NAME}_${DEB_VER}_amd64.deb
+dpkg-deb --root-owner-group -Zxz --build "$PKG" "$DEB"
+
+cd "$OUT"
+cp "$STOCK_CONFIG" "config-$KVER"
+cp "$REPO"/patches/*.patch .
+sha256sum "$NAME.ko" "$(basename "$DEB")" "config-$KVER" 0*.patch > SHA256SUMS
+cat > BUILDINFO <<EOF
+kernel: $SIG ($KVER, linux $KPKG)
+snapshot: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT
+gcc: $(x86_64-linux-gnu-gcc --version | head -1)
+ld: $(x86_64-linux-gnu-ld --version | head -1)
+rustc: $(rustc --version)
+bindgen: $(bindgen --version 2>/dev/null | head -1)
+pahole: $(pahole --version)
+make: $MAKEFLAGS
+module: $NAME.ko (sysfs /sys/kernel/livepatch/${NAME//-/_})
+package: $(basename "$DEB")
+build seconds: $SECONDS
+EOF
+cat SHA256SUMS BUILDINFO
+if [ -n "${HOST_UID:-}" ]; then chown -R "$HOST_UID" "$OUT"; fi
+echo "build OK"

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Load the livepatch now only on the exact kernel it was built for.
+set -e
+KVER=7.0.0-38-generic
+SIG="Ubuntu 7.0.0-38.38-generic 7.0.14"
+MOD=livepatch_xfrm_pcpu
+LP=/sys/kernel/livepatch/$MOD
+
+[ "$1" = configure ] || exit 0
+depmod -a "$KVER"
+if [ "$(uname -r)" != "$KVER" ] || [ "$(cat /proc/version_signature 2>/dev/null)" != "$SIG" ]; then
+	echo "$MOD: running kernel is not $SIG; it loads at the next boot of $KVER"
+	exit 0
+fi
+[ -d "$LP" ] || modprobe "$MOD"
+[ "$(cat "$LP/enabled")" = 1 ] || { echo "error: $MOD is loaded but not enabled" >&2; exit 1; }
+i=0
+while [ "$(cat "$LP/transition")" != 0 ]; do
+	i=$((i + 1))
+	[ $i -le 120 ] || { echo "error: $MOD transition not finished after 120s (see dmesg); patch stays in transition" >&2; exit 1; }
+	sleep 1
+done
+echo "$MOD: enabled, transition complete"

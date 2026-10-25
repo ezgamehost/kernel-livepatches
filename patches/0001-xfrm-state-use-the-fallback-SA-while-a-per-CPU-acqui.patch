@@ -1,0 +1,82 @@
+From ed33cde4420f47c97c9d3ef72f2be849cf00f8be Mon Sep 17 00:00:00 2001
+From: Zhixiang Zhao <matthewzhaocc@gmail.com>
+Date: Sat, 24 Oct 2026 23:13:40 -0700
+Subject: [PATCH ipsec] xfrm: state: use the fallback SA while a per-CPU
+ acquire is pending
+
+With XFRM_POLICY_CPU_ACQUIRE, xfrm_state_find() uses the best valid
+state directly only when it belongs to the current CPU. The non-CPU
+fallback state is selected only inside the block that creates a new
+per-CPU acquire, so the packet that starts the acquire is sent over
+the fallback SA.
+
+Once that larval state exists, xfrm_state_look_at() sets
+acquire_in_progress for it and the new-acquire block is skipped. The
+fallback is never selected, x stays NULL and the lookup returns
+-EAGAIN. With the default xfrm_larval_drop=1, every further packet on
+that CPU is dropped until the key manager installs the per-CPU SA, or
+until the larval state expires if it never does. This contradicts the
+comment on the fallback selection and RFC 9611 section 4, which has
+the CPU without its own SA keep using the SA available to all CPUs
+while the per-CPU SA is negotiated.
+
+Use the best valid state when an acquire is already in progress, as
+policies without XFRM_POLICY_CPU_ACQUIRE already do. No additional
+acquire is created, and a lookup that finds no valid state still
+returns -EAGAIN. The fallback is not added to the policy's state
+cache, because that path still requires x->pcpu_num == pcpu_id.
+
+The loss is easy to miss in normal operation, where it lasts about one
+IKE round trip per CPU. It can be reproduced deterministically with
+strongSwan 6.0.2 (per_cpu_sas, start_action = trap|start): establish
+the fallback SA, stop charon on both peers, then send one packet on a
+CPU, which succeeds and creates the larval acquire, and a second
+packet on the same CPU. The second packet is dropped while
+"ip xfrm state" still lists the valid fallback SA next to the larval
+state for that CPU. This happens for both IPv4 and IPv6 traffic.
+
+The problem was found and the fix drafted with AI coding assistants
+(OpenAI Codex and Anthropic Claude) while testing per-CPU SAs for a
+VXLAN-over-IPsec deployment. The analysis, reproducer and fix were
+reviewed by the submitter.
+
+Fixes: 1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling.")
+Signed-off-by: Zhixiang Zhao <matthewzhaocc@gmail.com>
+---
+Testing (not part of the changelog):
+ - Built Ubuntu 7.0.0-38.38 (7.0.14) twice from the same config, with
+   and without this change, and booted each in a 4-vCPU KVM guest.
+ - Setup: two IPsec peers in separate network namespaces joined by a
+   veth underlay, each with a guest namespace behind it. Traffic is
+   ping between the guests, routed over VXLAN inside UDP-encapsulated
+   transport-mode ESP (strongSwan 6.0.2, per_cpu_sas = encap,
+   start_action = trap|start, AES-GCM-16).
+ - Without the change, the reproducer above failed for both IPv4 and
+   IPv6. A variant that does not stop charon, and sends one packet per
+   CPU right after the fallback SA is up, lost traffic in 5 of 6 runs.
+ - With the change, both tests passed in 6 of 6 runs for both families,
+   and no plaintext reached the underlay.
+ - The same code is present in ipsec/master and mainline. The patch
+   was build-tested only on the Ubuntu 7.0 tree.
+
+ net/xfrm/xfrm_state.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
+index 0555e5d796ed..dec528f98d51 100644
+--- a/net/xfrm/xfrm_state.c
++++ b/net/xfrm/xfrm_state.c
+@@ -1518,7 +1518,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
+ 
+ found:
+ 	if (!(pol->flags & XFRM_POLICY_CPU_ACQUIRE) ||
+-	    (best && (best->pcpu_num == pcpu_id)))
++	    (best && (best->pcpu_num == pcpu_id || acquire_in_progress)))
+ 		x = best;
+ 
+ 	if (!x && !error && !acquire_in_progress) {
+
+base-commit: 835912998ca54a76b5c57f8c8459a86b1b45de40
+-- 
+2.54.0 (Apple Git-157)
+

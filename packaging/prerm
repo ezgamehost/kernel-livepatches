@@ -1,0 +1,23 @@
+#!/bin/sh
+# Disable the livepatch, wait for the transition, then unload it.
+set -e
+MOD=livepatch_xfrm_pcpu
+LP=/sys/kernel/livepatch/$MOD
+
+if [ -d "$LP" ]; then
+	[ "$(cat "$LP/enabled")" = 0 ] || echo 0 > "$LP/enabled"
+	i=0
+	# The sysfs directory goes away once the disable transition completes.
+	while [ -d "$LP" ]; do
+		i=$((i + 1))
+		[ $i -le 120 ] || { echo "error: $MOD still present 120s after disable (see dmesg $LP/transition); not unloaded" >&2; exit 1; }
+		sleep 1
+	done
+fi
+i=0
+while grep -q "^$MOD " /proc/modules; do
+	modprobe -r "$MOD" 2>/dev/null && { echo "$MOD: disabled and unloaded"; break; }
+	i=$((i + 1))
+	[ $i -le 10 ] || { echo "error: cannot unload $MOD" >&2; modprobe -r "$MOD"; exit 1; }
+	sleep 1
+done

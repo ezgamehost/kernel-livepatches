@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+KVER=7.0.0-38-generic
+if [ -d "/usr/lib/modules/$KVER" ] && command -v depmod >/dev/null; then depmod -a "$KVER"; fi
