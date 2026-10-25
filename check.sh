@@ -23,6 +23,8 @@ count_map() { awk -v n="$1" '$3 == n { c++ } END { print c + 0 }' "$MAP"; }
 nm "$ORIG_VMLINUX" > /tmp/orig.nm
 count_orig() { awk -v n="$1" '$3 == n { c++ } END { print c + 0 }' /tmp/orig.nm; }
 
+echo "== module"
+echo "name: $(modinfo -F name "$KO") srcversion: $(modinfo -F srcversion "$KO")"
 echo "== vermagic"
 want=$(modinfo -F vermagic "$MODDIR/kernel/net/xfrm/xfrm_user.ko.zst")
 got=$(modinfo -F vermagic "$KO")
@@ -49,8 +51,13 @@ for s in $(comm -23 /tmp/und <(awk '{ print $2 }' /tmp/modversions | sort -u)); 
 done
 
 echo "== klp relocation symbols (.klp.sym.<obj>.<name>,<sympos>)"
-readelf -sW "$KO" | awk '$8 ~ /^\.klp\.sym\./ { print $8 }' | sort -u > /tmp/klpsyms
-[ -s /tmp/klpsyms ] || echo "(none)"
+# The Ndx of these is "OS [0xff20]" (SHN_LIVEPATCH), two words, so use $NF.
+readelf -sW "$KO" | awk '$NF ~ /^\.klp\.sym\./ { print $NF }' | sort -u > /tmp/klpsyms
+readelf -rW "$KO" | awk '$5 ~ /^\.klp\.sym\./ { print $5 }' | sort -u > /tmp/klprelsyms
+[ -s /tmp/klprelsyms ] || bad "no .klp.rela relocations found (parser broken?)"
+for s in $(comm -13 /tmp/klpsyms /tmp/klprelsyms); do bad "relocation target $s is not in the symbol table"; done
+# Data symbols (e.g. xfrm_km_list) are only in kallsyms with KALLSYMS_ALL.
+grep -qx CONFIG_KALLSYMS_ALL=y "$STOCK/boot/config-$KVER" || bad "stock kernel lacks CONFIG_KALLSYMS_ALL"
 while read -r s; do
 	s=${s#.klp.sym.}
 	obj=${s%%.*} rest=${s#*.}
