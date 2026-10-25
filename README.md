@@ -7,6 +7,12 @@ stock Ubuntu kernel and is published as a signed apt package.
 | --- | --- | --- |
 | `livepatch-xfrm-pcpu` (sysfs `livepatch_xfrm_pcpu`) | `Ubuntu 7.0.0-38.38-generic 7.0.14` | `ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic` 1.0.0 |
 
+v1.0.0 (tag `v1.0.0`) builds `livepatch-xfrm-pcpu.ko` with `srcversion`
+`83A1BA27BABEED7E191B9DA` and sha256
+`6f6394dd17027f1b1dd2fcd59c26204143da755428f62287b08bf9fc07abc7a5`. Two
+independent CI builds produced the same `.ko`. The published `.deb` has sha256
+`c36a55de9c59f06225261b8cb7a0e551a75cb75911c7fba18f13917be66eba77`.
+
 ## The bugs
 
 Both are in `net/xfrm/xfrm_state.c` per-CPU SA handling (RFC 9611), added by
