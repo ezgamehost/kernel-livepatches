@@ -25,6 +25,11 @@ count_orig() { awk -v n="$1" '$3 == n { c++ } END { print c + 0 }' /tmp/orig.nm;
 
 echo "== module"
 echo "name: $(modinfo -F name "$KO") srcversion: $(modinfo -F srcversion "$KO")"
+echo "== namespace imports (klp diff copies every import_ns of the patched objects)"
+modinfo -F import_ns "$KO" | sort | uniq -c | sed 's/^ */  /'
+# The loader rejects an explicit module: import with -EPERM; others are inert.
+if modinfo -F import_ns "$KO" | grep -q '^module:'; then bad "module: namespace import (load would fail)"; else echo "ok: no module: imports"; fi
+
 echo "== vermagic"
 want=$(modinfo -F vermagic "$MODDIR/kernel/net/xfrm/xfrm_user.ko.zst")
 got=$(modinfo -F vermagic "$KO")

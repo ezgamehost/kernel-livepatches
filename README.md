@@ -64,6 +64,10 @@ difference:
 [`check.sh`](check.sh) runs as part of every build and fails it on any mismatch.
 Its output is published as `static-check.txt`.
 
+- It lists the module's `import_ns` tags. klp-build copies every namespace import
+  of the patched objects (all of vmlinux.o's built-in drivers). These are inert
+  unless the module uses a namespaced symbol. The check fails on a `module:`
+  import, which the loader rejects. Added after v1.0.0, whose module has none.
 - The `vermagic` equals that of the stock modules.
 - The build's `Module.symvers` is identical to the stock
   `linux-headers-7.0.0-38-generic` one, CRCs included. Every modversion CRC
