@@ -51,11 +51,11 @@ Testing (not part of the changelog):
  - With both patches, a functional suite of 27 tests passed, covering
    per-CPU SAs, rekey and reauthentication, revocation, daemon restart
    and checks that no plaintext reaches the underlay.
- - One daemon-restart test still fails about 1 run in 5. After a
-   restart, the IKE responder can send on its new outbound SA about
-   180 microseconds before the initiator installs the matching inbound
-   SA. That packet is encrypted and dropped. It is unrelated to this
-   patch.
+ - With both patches, the daemon-restart test still fails about 1 run
+   in 5. The failing probe is the first one at test start, while both
+   peers are initiating IKE to each other at the same time, not the
+   probe after the restart. That packet is encrypted and dropped. Its
+   cause is not yet confirmed.
  - Build-tested only on the Ubuntu 7.0 tree.
 
  net/xfrm/xfrm_state.c | 7 ++++---
