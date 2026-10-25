@@ -1,13 +1,15 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 #
-# Add a build's .deb to the apt repository tree in PAGES_DIR, publish its
-# files under releases/VERSION/, and sign the repository. Runs as root in
-# ubuntu:26.04 with the armored private key in $APT_SIGNING_KEY.
+# Add a build's .deb to the apt repository in ROOT_DIR/apt (pool/ holding the
+# already-published packages), put its files in ROOT_DIR/files/VERSION, and
+# sign the repository. ROOT_DIR mirrors https://get.ezghcloud.com/kernel-livepatches/.
+# Runs as root in ubuntu:26.04 with the armored private key in $APT_SIGNING_KEY.
 #
-# Usage: mkrepo.sh OUT_DIR PAGES_DIR VERSION
+# Usage: mkrepo.sh OUT_DIR ROOT_DIR VERSION
 set -euo pipefail
-OUT=$1 P=$2 VERSION=$3
+OUT=$1 ROOT=$2 VERSION=$3
+P=$ROOT/apt
 REPO=$(cd "$(dirname "$0")" && pwd)
 die() { echo "error: $*" >&2; exit 1; }
 [ -n "${APT_SIGNING_KEY:-}" ] || die "APT_SIGNING_KEY is not set"
@@ -22,14 +24,13 @@ pkg=$(dpkg-deb -f "$deb" Package)
 pool=$P/pool/main/e/$pkg
 dest=$pool/$(basename "$deb")
 [ ! -e "$dest" ] || cmp -s "$deb" "$dest" || die "$dest is already published with different contents"
-rel=$P/releases/$VERSION
+rel=$ROOT/files/$VERSION
 [ ! -e "$rel" ] || cmp -s "$OUT/SHA256SUMS" "$rel/SHA256SUMS" || die "$rel is already published with different contents"
 mkdir -p "$pool" "$rel"
 cp "$deb" "$pool/"
 cp "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*} "$rel/"
 cp "$deb" "$rel/"
-cp "$REPO/keys/apt.asc" "$P/apt.asc"
-touch "$P/.nojekyll"
+cp "$REPO/keys/apt.asc" "$ROOT/apt.asc"
 
 cd "$P"
 d=dists/resolute
@@ -59,5 +60,5 @@ gpg --batch --yes --local-user "$fpr" --digest-algo SHA512 -abs -o "$d/Release.g
 gpg --batch --yes --local-user "$fpr" --digest-algo SHA512 -abs -o "$rel/SHA256SUMS.asc" "$rel/SHA256SUMS"
 gpg --dearmor < "$REPO/keys/apt.asc" > "$GNUPGHOME/apt.gpg"
 gpgv --keyring "$GNUPGHOME/apt.gpg" "$d/InRelease"
-if [ -n "${HOST_UID:-}" ]; then chown -R "$HOST_UID" "$P"; fi
+if [ -n "${HOST_UID:-}" ]; then chown -R "$HOST_UID" "$ROOT"; fi
 echo "signed $d with $fpr"

@@ -71,12 +71,13 @@ Its output is published as `static-check.txt`.
 
 ## Install
 
-The apt repository is served from this repo's `gh-pages` branch:
+The signed apt repository is at `https://get.ezghcloud.com/kernel-livepatches/apt`
+(suite `resolute`, component `main`):
 
 ```sh
-curl -fsSL https://ezgamehost.github.io/kernel-livepatches/apt.asc \
+curl -fsSL https://get.ezghcloud.com/kernel-livepatches/apt.asc \
   -o /etc/apt/keyrings/ezgh-kernel-livepatches.asc
-echo 'deb [signed-by=/etc/apt/keyrings/ezgh-kernel-livepatches.asc] https://ezgamehost.github.io/kernel-livepatches resolute main' \
+echo 'deb [signed-by=/etc/apt/keyrings/ezgh-kernel-livepatches.asc] https://get.ezghcloud.com/kernel-livepatches/apt resolute main' \
   > /etc/apt/sources.list.d/ezgh-kernel-livepatches.list
 apt-get update
 apt-get install ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic
@@ -115,10 +116,10 @@ then unloads the module, and fails loudly if either step does not complete.
 ## Verify a download
 
 There are no GitHub Releases. The apt repository and the per-version files on
-Pages are the distribution:
+get.ezghcloud.com are the distribution:
 
 ```
-https://ezgamehost.github.io/kernel-livepatches/releases/v1.0.0/
+https://get.ezghcloud.com/kernel-livepatches/files/v1.0.0/
   livepatch-xfrm-pcpu.ko  ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic_1.0.0_amd64.deb
   SHA256SUMS  SHA256SUMS.asc  BUILDINFO  static-check.txt
   config-7.0.0-38-generic  0001-*.patch  0002-*.patch
@@ -128,7 +129,7 @@ https://ezgamehost.github.io/kernel-livepatches/releases/v1.0.0/
 gpg --dearmor < keys/apt.asc > apt.gpg
 gpgv --keyring ./apt.gpg SHA256SUMS.asc SHA256SUMS
 sha256sum -c SHA256SUMS
-gpgv --keyring ./apt.gpg InRelease   # dists/resolute/InRelease
+gpgv --keyring ./apt.gpg InRelease   # .../kernel-livepatches/apt/dists/resolute/InRelease
 ```
 
 `SHA256SUMS` also covers the stock config and both patches, so the inputs can be
@@ -147,8 +148,8 @@ docker run --rm -v "$PWD:$PWD" -w "$PWD" \
 The build needs amd64, about 4 CPUs for several hours, and up to 100 GB of
 disk. klp-build builds the whole kernel with debug info, including modules,
 keeps a copy of every object, and then rebuilds the patched objects. `mkrepo.sh` adds a build to the apt tree and signs it. EZGH's CI runs both
-scripts from a private repository on internal runners and pushes the signed tree
-to `gh-pages`.
+scripts from a private repository on internal runners and uploads the signed
+tree to get.ezghcloud.com.
 
 ## License
 
