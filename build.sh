@@ -39,7 +39,8 @@ want() { [ "$2" = "$3" ] || die "$1: got '$2', want '$3'"; echo "ok $1: $2"; }
 export DEBIAN_FRONTEND=noninteractive
 "$REPO/snapshot-apt.sh"
 apt-get build-dep -y -q --arch-only "linux=$KPKG"
-apt-get install -y -q --no-install-recommends dpkg-dev git gawk kmod zstd
+# libxxhash-dev: objtool --checksum (klp-build only; not used by the stock build)
+apt-get install -y -q --no-install-recommends dpkg-dev git gawk kmod zstd libxxhash-dev
 
 # --- Toolchain must be the one that built the stock kernel ----------------
 want "gcc-15 package" "$(dpkg-query -W -f='${Version}' gcc-15)" "$GCC_PKG"
