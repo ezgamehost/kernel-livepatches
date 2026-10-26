@@ -24,6 +24,8 @@ LD_TEXT="GNU ld (GNU Binutils for Ubuntu) 2.46"
 # Cumulative atomic-replace module. Each release takes a new module and package
 # name, so the upgrade loads it over the old one instead of unloading that first.
 NAME=livepatch-xfrm-pcpu-2
+# Every earlier module name for this kernel; the package keeps them from loading.
+SUPERSEDES=(livepatch_xfrm_pcpu)
 DEB_NAME=ezgh-livepatch-xfrm-pcpu-2-$KVER
 DEB_VER=1.1.0
 
@@ -106,10 +108,12 @@ cp klp-tmp/diff/diff.log "$OUT/klp-diff.log"
 PKG=$WORK/pkg
 rm -rf "$PKG"
 install -D -m 0644 "$OUT/$NAME.ko" "$PKG/usr/lib/modules/$KVER/updates/ezgh/$NAME.ko"
-install -d "$PKG/usr/lib/modules-load.d" "$PKG/DEBIAN"
-# Sorts after 1.0.0's livepatch-xfrm-pcpu.conf, which stays installed (PM never
-# removes packages): at boot this module loads last and replaces that one.
-echo "${NAME//-/_}" > "$PKG/usr/lib/modules-load.d/zz-$NAME.conf"
+install -d "$PKG/usr/lib/modules-load.d" "$PKG/usr/lib/modprobe.d" "$PKG/DEBIAN"
+echo "${NAME//-/_}" > "$PKG/usr/lib/modules-load.d/$NAME.conf"
+# Older packages stay installed (PM never removes packages). systemd-modules-load
+# probes in parallel, so an older module could load after this one and win;
+# kmod's blacklist makes it skip them. An explicit modprobe NAME still works.
+printf 'blacklist %s\n' "${SUPERSEDES[@]}" > "$PKG/usr/lib/modprobe.d/$NAME.conf"
 install -m 0755 "$REPO"/packaging/{postinst,prerm,postrm} "$PKG/DEBIAN/"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: $DEB_NAME

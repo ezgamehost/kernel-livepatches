@@ -13,8 +13,16 @@ supersedes every livepatch on the host, including the previous release, in one
 transition. Each release has a new module and package name, so an upgrade
 installs the new package (which loads over the old one) instead of upgrading
 the old package, whose prerm would unload it first. The old package can stay
-installed; at boot the new module loads after it and replaces it. 1.0.0 was
-built with `--no-replace`.
+installed. The new package blacklists every older module name in
+`/usr/lib/modprobe.d/`, because systemd-modules-load (systemd 259) probes
+modules in parallel: an older module loaded after the new one would be patched
+on top of it and win, while both report enabled. An explicit `modprobe` of an
+older module still works, for a rollback. 1.0.0 was built with `--no-replace`.
+
+Roll back 1.1.0 to 1.0.0 by removing the 1.1.0 package (its prerm disables and
+unloads the module, leaving the kernel unpatched), then `modprobe -r
+livepatch_xfrm_pcpu && modprobe livepatch_xfrm_pcpu`: a replaced livepatch
+cannot be re-enabled, only reloaded.
 
 Identify a loaded build by its module name and GNU build-id. Read the build-id
 from `/sys/module/NAME/notes/.note.gnu.build-id` as root (the last 20 bytes of
@@ -123,7 +131,8 @@ Compare the key with [`keys/apt.asc`](keys/apt.asc) (fingerprint
 `B42D D9D0 2D37 8220 233C  E607 5398 FA60 DA2D 5332`).
 
 - The module is installed in `/usr/lib/modules/7.0.0-38-generic/updates/ezgh/`.
-  `/usr/lib/modules-load.d/zz-livepatch-xfrm-pcpu-2.conf` loads it at boot.
+  `/usr/lib/modules-load.d/livepatch-xfrm-pcpu-2.conf` loads it at boot, and
+  `/usr/lib/modprobe.d/livepatch-xfrm-pcpu-2.conf` blacklists older modules.
 - postinst runs `depmod`. It loads the patch immediately only if `uname -r` is
   `7.0.0-38-generic` and `/proc/version_signature` is exactly
   `Ubuntu 7.0.0-38.38-generic 7.0.14`. It then waits up to 120 s for
