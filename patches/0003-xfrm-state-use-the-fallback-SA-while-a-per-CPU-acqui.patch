@@ -1,8 +1,8 @@
-From ed33cde4420f47c97c9d3ef72f2be849cf00f8be Mon Sep 17 00:00:00 2001
+From 7bc13880cc31a58c805d1d2e8d052a3b60b99a42 Mon Sep 17 00:00:00 2001
 From: Zhixiang Zhao <matthewzhaocc@gmail.com>
-Date: Sat, 24 Oct 2026 23:13:40 -0700
-Subject: [PATCH ipsec] xfrm: state: use the fallback SA while a per-CPU
- acquire is pending
+Date: Mon, 26 Oct 2026 09:04:06 -0700
+Subject: [PATCH 3/4] xfrm: state: use the fallback SA while a per-CPU acquire
+ is pending
 
 With XFRM_POLICY_CPU_ACQUIRE, xfrm_state_find() uses the best valid
 state directly only when it belongs to the current CPU. The non-CPU
@@ -21,10 +21,20 @@ the CPU without its own SA keep using the SA available to all CPUs
 while the per-CPU SA is negotiated.
 
 Use the best valid state when an acquire is already in progress, as
-policies without XFRM_POLICY_CPU_ACQUIRE already do. No additional
-acquire is created, and a lookup that finds no valid state still
-returns -EAGAIN. The fallback is not added to the policy's state
-cache, because that path still requires x->pcpu_num == pcpu_id.
+policies without XFRM_POLICY_CPU_ACQUIRE already do. After the
+previous patch, acquire_in_progress here means an acquire for this CPU
+or one without a CPU ID. No additional acquire is created, and a
+lookup that finds no valid state still returns -EAGAIN. The fallback
+is not added to the policy's state cache, because that path still
+requires x->pcpu_num == pcpu_id.
+
+A fallback with a wildcard source address is hashed into the wildcard
+bucket, but the larval state gets the flow's source address. The walk
+of the exact bucket then finds only the larval state and jumps to
+found before the wildcard walk, so the fallback is not seen at all.
+For XFRM_POLICY_CPU_ACQUIRE policies, continue into the wildcard walk
+when an acquire is pending and no valid state was found. Other
+policies keep the early exit.
 
 The loss is easy to miss in normal operation, where it lasts about one
 IKE round trip per CPU. It can be reproduced deterministically with
@@ -41,42 +51,34 @@ VXLAN-over-IPsec deployment. The analysis, reproducer and fix were
 reviewed by the submitter.
 
 Fixes: 1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling.")
-Signed-off-by: Zhixiang Zhao <matthewzhaocc@gmail.com>
+Assisted-by: LLM
 ---
-Testing (not part of the changelog):
- - Built Ubuntu 7.0.0-38.38 (7.0.14) twice from the same config, with
-   and without this change, and booted each in a 4-vCPU KVM guest.
- - Setup: two IPsec peers in separate network namespaces joined by a
-   veth underlay, each with a guest namespace behind it. Traffic is
-   ping between the guests, routed over VXLAN inside UDP-encapsulated
-   transport-mode ESP (strongSwan 6.0.2, per_cpu_sas = encap,
-   start_action = trap|start, AES-GCM-16).
- - Without the change, the reproducer above failed for both IPv4 and
-   IPv6. A variant that does not stop charon, and sends one packet per
-   CPU right after the fallback SA is up, lost traffic in 5 of 6 runs.
- - With the change, both tests passed in 6 of 6 runs for both families,
-   and no plaintext reached the underlay.
- - The same code is present in ipsec/master and mainline. The patch
-   was build-tested only on the Ubuntu 7.0 tree.
-
- net/xfrm/xfrm_state.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ net/xfrm/xfrm_state.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
-index 0555e5d796ed..dec528f98d51 100644
+index 5bed6ec6a..bfba1abce 100644
 --- a/net/xfrm/xfrm_state.c
 +++ b/net/xfrm/xfrm_state.c
-@@ -1518,7 +1518,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
+@@ -1483,7 +1483,8 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
+ 			xfrm_state_look_at(pol, x, fl, family,
+ 					   &best, &acquire_in_progress, &error, pcpu_id);
+ 	}
+-	if (best || acquire_in_progress)
++	if (best ||
++	    (acquire_in_progress && !(pol->flags & XFRM_POLICY_CPU_ACQUIRE)))
+ 		goto found;
  
+ 	h_wildcard = __xfrm_dst_hash(daddr, &saddr_wildcard, tmpl->reqid,
+@@ -1522,7 +1523,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
  found:
+ 	x = NULL;
  	if (!(pol->flags & XFRM_POLICY_CPU_ACQUIRE) ||
 -	    (best && (best->pcpu_num == pcpu_id)))
 +	    (best && (best->pcpu_num == pcpu_id || acquire_in_progress)))
  		x = best;
  
  	if (!x && !error && !acquire_in_progress) {
-
-base-commit: 835912998ca54a76b5c57f8c8459a86b1b45de40
 -- 
 2.54.0 (Apple Git-157)
 

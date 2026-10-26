@@ -23,7 +23,7 @@ GCC_TEXT="x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
 LD_TEXT="GNU ld (GNU Binutils for Ubuntu) 2.46"
 NAME=livepatch-xfrm-pcpu
 DEB_NAME=ezgh-livepatch-xfrm-pcpu-$KVER
-DEB_VER=1.0.0
+DEB_VER=1.1.0
 
 REPO=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:-/build}
@@ -104,7 +104,7 @@ Section: kernel
 Priority: optional
 Homepage: https://github.com/ezgamehost/kernel-livepatches
 Description: livepatch for xfrm per-CPU SA fallback bugs ($SIG)
- Livepatch module $NAME (sysfs ${NAME//-/_}) carrying two xfrm_state fixes
+ Livepatch module $NAME (sysfs ${NAME//-/_}) carrying four xfrm_state fixes
  for per-CPU IPsec SAs (Fixes: 1ddf9916ac09). Loads at install when the
  running kernel is exactly $SIG, and at every boot of $KVER.
 EOF

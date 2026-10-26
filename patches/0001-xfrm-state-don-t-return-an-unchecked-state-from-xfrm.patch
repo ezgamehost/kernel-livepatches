@@ -1,0 +1,44 @@
+From 4493649ea6f196d47faa4f48169091d9092567e6 Mon Sep 17 00:00:00 2001
+From: Zhixiang Zhao <matthewzhaocc@gmail.com>
+Date: Mon, 26 Oct 2026 09:03:41 -0700
+Subject: [PATCH 1/4] xfrm: state: don't return an unchecked state from
+ xfrm_state_find()
+
+With CONFIG_XFRM_OFFLOAD and a packet offload policy, the bydst and
+wildcard walks in xfrm_state_find() stop with a break at the first
+software state. x then points at that state, which was never matched
+against the template, addresses or selector, and never passed to
+xfrm_state_look_at().
+
+Policies without XFRM_POLICY_CPU_ACQUIRE always overwrite x with best.
+With XFRM_POLICY_CPU_ACQUIRE, x is set to best only when best belongs to
+the current CPU, so x can keep the state from the break. It is then
+non-NULL, the new-acquire block is skipped, and the unrelated state is
+returned for the flow, with its SPI, keys and, in tunnel mode, its outer
+addresses.
+
+Clear x before deciding whether to use best.
+
+Fixes: 1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling.")
+Assisted-by: LLM
+---
+ net/xfrm/xfrm_state.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
+index 0555e5d79..836b45777 100644
+--- a/net/xfrm/xfrm_state.c
++++ b/net/xfrm/xfrm_state.c
+@@ -1517,6 +1517,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
+ 	}
+ 
+ found:
++	x = NULL;
+ 	if (!(pol->flags & XFRM_POLICY_CPU_ACQUIRE) ||
+ 	    (best && (best->pcpu_num == pcpu_id)))
+ 		x = best;
+
+base-commit: 835912998ca54a76b5c57f8c8459a86b1b45de40
+-- 
+2.54.0 (Apple Git-157)
+

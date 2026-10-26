@@ -1,0 +1,53 @@
+From df2ac726a2515c59dc5f38d4037d393507f86c04 Mon Sep 17 00:00:00 2001
+From: Zhixiang Zhao <matthewzhaocc@gmail.com>
+Date: Mon, 26 Oct 2026 09:03:52 -0700
+Subject: [PATCH 2/4] xfrm: state: ignore other CPUs' acquires in
+ xfrm_state_look_at()
+
+With XFRM_POLICY_CPU_ACQUIRE, a CPU whose lookup finds only the
+fallback SA starts an acquire for its own SA and sends the packet over
+the fallback meanwhile. xfrm_state_look_at() sets acquire_in_progress
+for a larval state of any CPU while best is still NULL, though, and
+XFRM_STATE_INSERT() puts a new larval state in front of the older
+fallback in the bydst bucket.
+
+So while one CPU's acquire is pending, a lookup on another CPU usually
+sees that larval state before the fallback. The new-acquire block is
+skipped, no acquire is sent for the second CPU, and the packet is
+dropped with -EAGAIN. Per-CPU SAs are negotiated one CPU at a time,
+and each CPU waits until the acquire before it resolves, or expires
+after sysctl_acq_expires.
+
+RFC 9611 section 4 has each CPU negotiate its own SA while it keeps
+using the SA available to all CPUs. Ignore larval states that belong to
+another CPU, as the XFRM_STATE_VALID branch already ignores other CPUs'
+valid states. Larval states without a CPU ID still set
+acquire_in_progress as before, so policies without
+XFRM_POLICY_CPU_ACQUIRE and the negotiation of the fallback itself are
+unchanged. If the fallback is gone while another CPU's acquire is
+pending, a lookup now starts an acquire without a CPU ID instead of
+returning -EAGAIN.
+
+Fixes: 1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling.")
+Assisted-by: LLM
+---
+ net/xfrm/xfrm_state.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
+index 836b45777..5bed6ec6a 100644
+--- a/net/xfrm/xfrm_state.c
++++ b/net/xfrm/xfrm_state.c
+@@ -1363,6 +1363,9 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
+ 		     (*best)->curlft.add_time < x->curlft.add_time))
+ 			*best = x;
+ 	} else if (x->km.state == XFRM_STATE_ACQ) {
++		if (x->pcpu_num != UINT_MAX && x->pcpu_num != pcpu_id)
++			return;
++
+ 		if (!*best || x->pcpu_num == pcpu_id)
+ 			*acq_in_progress = 1;
+ 	} else if (x->km.state == XFRM_STATE_ERROR ||
+-- 
+2.54.0 (Apple Git-157)
+

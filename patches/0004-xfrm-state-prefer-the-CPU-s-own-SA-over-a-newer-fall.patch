@@ -1,7 +1,7 @@
-From 520134ed4b39eb007be91fd1bec2fa55f291ad63 Mon Sep 17 00:00:00 2001
+From 60955b1bab28261b677e557aa573965445a1ba45 Mon Sep 17 00:00:00 2001
 From: Zhixiang Zhao <matthewzhaocc@gmail.com>
 Date: Sun, 25 Oct 2026 00:39:24 -0700
-Subject: [PATCH ipsec] xfrm: state: prefer the CPU's own SA over a newer
+Subject: [PATCH 4/4] xfrm: state: prefer the CPU's own SA over a newer
  fallback
 
 xfrm_state_look_at() lets a valid state whose pcpu_num matches the
@@ -33,36 +33,11 @@ reviewed by the submitter.
 
 Fixes: 1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling.")
 ---
-Testing (not part of the changelog):
- - This is a separate bug from "xfrm: state: use the fallback SA while
-   a per-CPU acquire is pending", sent earlier. Either applies alone.
- - Built Ubuntu 7.0.0-38.38 (7.0.14) from one config three ways:
-   unpatched, that patch only, and both patches. Each was booted in a
-   4-vCPU KVM guest.
- - Setup: two IPsec peers in separate network namespaces joined by a
-   veth underlay, each with a guest namespace behind it. Traffic is
-   ping between the guests, over VXLAN inside UDP-encapsulated
-   transport-mode ESP (strongSwan 6.0.2, per_cpu_sas = encap,
-   start_action = trap|start, AES-GCM-16).
- - A revocation test that needs traffic on two CPUs' own SAs passed
-   0 of 5 runs unpatched and 0 of 5 with only the other patch, where
-   only CPU 0's SA ever carried traffic. With both patches it passed
-   5 of 5 runs.
- - With both patches, a functional suite of 27 tests passed, covering
-   per-CPU SAs, rekey and reauthentication, revocation, daemon restart
-   and checks that no plaintext reaches the underlay.
- - With both patches, the daemon-restart test still fails about 1 run
-   in 5. The failing probe is the first one at test start, while both
-   peers are initiating IKE to each other at the same time, not the
-   probe after the restart. That packet is encrypted and dropped. Its
-   cause is not yet confirmed.
- - Build-tested only on the Ubuntu 7.0 tree.
-
  net/xfrm/xfrm_state.c | 7 ++++---
  1 file changed, 4 insertions(+), 3 deletions(-)
 
 diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
-index 0555e5d79..77f355e6b 100644
+index bfba1abce..ff6cb75c7 100644
 --- a/net/xfrm/xfrm_state.c
 +++ b/net/xfrm/xfrm_state.c
 @@ -1358,9 +1358,10 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
@@ -78,9 +53,7 @@ index 0555e5d79..77f355e6b 100644
 +		       (*best)->curlft.add_time < x->curlft.add_time))))
  			*best = x;
  	} else if (x->km.state == XFRM_STATE_ACQ) {
- 		if (!*best || x->pcpu_num == pcpu_id)
-
-base-commit: 835912998ca54a76b5c57f8c8459a86b1b45de40
+ 		if (x->pcpu_num != UINT_MAX && x->pcpu_num != pcpu_id)
 -- 
 2.54.0 (Apple Git-157)
 
