@@ -25,7 +25,7 @@ LD_TEXT="GNU ld (GNU Binutils for Ubuntu) 2.46"
 # name, so the upgrade loads it over the old one instead of unloading that first.
 NAME=livepatch-xfrm-pcpu-2
 DEB_NAME=ezgh-livepatch-xfrm-pcpu-2-$KVER
-DEB_VER=1.1.0
+DEB_VER=1.1.0~v2only
 
 REPO=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:-/build}
