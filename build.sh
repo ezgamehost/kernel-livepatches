@@ -72,10 +72,14 @@ want "kernelrelease" "$(make -s kernelrelease)" "$KVER"
 want "version signature" "$(sed -n 's/^CONFIG_VERSION_SIGNATURE="\(.*\)"$/\1/p' .config)" "$SIG"
 
 cp "$REPO"/patches/*.patch "$WORK/patches/"
+# Later patches build on earlier ones: apply in order, then restore the tree
+# for klp-build, which applies them the same way.
+applied=()
 for p in "$WORK"/patches/*.patch; do
-	sed -n '/^-- /q;p' "$p" | git apply --check -v
+	sed -n '/^-- /q;p' "$p" | git apply -v
+	applied=("$p" "${applied[@]}")
 done
-git apply --check <(for p in "$WORK"/patches/*.patch; do sed -n '/^-- /q;p' "$p"; done)
+for p in "${applied[@]}"; do sed -n '/^-- /q;p' "$p" | git apply -R; done
 echo "ok patches: apply to the Ubuntu tree"
 if [ "${1:-}" = --preflight ]; then echo "preflight OK"; exit 0; fi
 
