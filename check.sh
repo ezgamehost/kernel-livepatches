@@ -24,7 +24,7 @@ nm "$ORIG_VMLINUX" > /tmp/orig.nm
 count_orig() { awk -v n="$1" '$3 == n { c++ } END { print c + 0 }' /tmp/orig.nm; }
 
 echo "== module"
-echo "name: $(modinfo -F name "$KO") srcversion: $(modinfo -F srcversion "$KO")"
+echo "name: $(modinfo -F name "$KO") build-id: $(readelf -n "$KO" | sed -n "s/.*Build ID: //p")"
 echo "== namespace imports (klp diff copies every import_ns of the patched objects)"
 modinfo -F import_ns "$KO" | sort | uniq -c | sed 's/^ */  /'
 # The loader rejects an explicit module: import with -EPERM; others are inert.

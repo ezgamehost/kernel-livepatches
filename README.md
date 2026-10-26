@@ -16,10 +16,19 @@ the old package, whose prerm would unload it first. The old package can stay
 installed; at boot the new module loads after it and replaces it. 1.0.0 was
 built with `--no-replace`.
 
-v1.0.0 (tag `v1.0.0`) builds `livepatch-xfrm-pcpu.ko` with `srcversion`
-`83A1BA27BABEED7E191B9DA` and sha256
-`6f6394dd17027f1b1dd2fcd59c26204143da755428f62287b08bf9fc07abc7a5`. Two
-independent CI builds produced the same `.ko`. The published `.deb` has sha256
+Identify a loaded build by its module name and GNU build-id. Read the build-id
+from `/sys/module/NAME/notes/.note.gnu.build-id` as root (the last 20 bytes of
+the note) or with `readelf -n` on the `.ko`. Do not use `srcversion`: klp-build
+computes it from its generated module stub, so every module here reports
+`83A1BA27BABEED7E191B9DA` whatever it patches.
+
+| Tag | `.ko` | Build-id | `.ko` sha256 |
+| --- | --- | --- | --- |
+| `v1.1.0` | `livepatch-xfrm-pcpu-2.ko` | `afeed34a00a9e6eea5f65c0eec640d8c1d65743a` | `b47e1eea575524d2160bbb3fb3f1483048a5095d4187340ec3a8d34ee8bf3d85` |
+| `v1.0.0` | `livepatch-xfrm-pcpu.ko` | `280da6ff9ffa60e252bf51f91aac68a9e26883d8` | `6f6394dd17027f1b1dd2fcd59c26204143da755428f62287b08bf9fc07abc7a5` |
+
+For v1.0.0, two independent CI builds produced the same `.ko`, and the
+published `.deb` has sha256
 `c36a55de9c59f06225261b8cb7a0e551a75cb75911c7fba18f13917be66eba77`.
 
 ## The bugs
