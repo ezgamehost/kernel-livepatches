@@ -3,7 +3,7 @@
 set -e
 KVER=7.0.0-38-generic
 SIG="Ubuntu 7.0.0-38.38-generic 7.0.14"
-MOD=livepatch_xfrm_pcpu
+MOD=livepatch_xfrm_pcpu_2
 LP=/sys/kernel/livepatch/$MOD
 
 [ "$1" = configure ] || exit 0

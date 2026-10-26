@@ -5,7 +5,16 @@ stock Ubuntu kernel and is published as a signed apt package.
 
 | Module | Kernel | Package |
 | --- | --- | --- |
-| `livepatch-xfrm-pcpu` (sysfs `livepatch_xfrm_pcpu`) | `Ubuntu 7.0.0-38.38-generic 7.0.14` | `ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic` 1.0.0 |
+| `livepatch-xfrm-pcpu-2` (sysfs `livepatch_xfrm_pcpu_2`) | `Ubuntu 7.0.0-38.38-generic 7.0.14` | `ezgh-livepatch-xfrm-pcpu-2-7.0.0-38-generic` 1.1.0 |
+| `livepatch-xfrm-pcpu` (sysfs `livepatch_xfrm_pcpu`), superseded | `Ubuntu 7.0.0-38.38-generic 7.0.14` | `ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic` 1.0.0 |
+
+From 1.1.0, each module is cumulative and built with atomic replace: loading it
+supersedes every livepatch on the host, including the previous release, in one
+transition. Each release has a new module and package name, so an upgrade
+installs the new package (which loads over the old one) instead of upgrading
+the old package, whose prerm would unload it first. The old package can stay
+installed; at boot the new module loads after it and replaces it. 1.0.0 was
+built with `--no-replace`.
 
 v1.0.0 (tag `v1.0.0`) builds `livepatch-xfrm-pcpu.ko` with `srcversion`
 `83A1BA27BABEED7E191B9DA` and sha256
@@ -15,22 +24,30 @@ independent CI builds produced the same `.ko`. The published `.deb` has sha256
 
 ## The bugs
 
-Both are in `net/xfrm/xfrm_state.c` per-CPU SA handling (RFC 9611), added by
-1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling."). Both
-patches carry that `Fixes:` tag.
+All are in `net/xfrm/xfrm_state.c` per-CPU SA handling (RFC 9611), added by
+1ddf9916ac09 ("xfrm: Add support for per cpu xfrm state handling."). Every
+patch carries that `Fixes:` tag. 0001–0003 are the ipsec v2 series, which
+replaced the single v1 patch after review; they apply in order.
 
-- [`patches/0001`](patches/0001-xfrm-state-use-the-fallback-SA-while-a-per-CPU-acqui.patch):
+- [`patches/0001`](patches/0001-xfrm-state-don-t-return-an-unchecked-state-from-xfrm.patch):
+  under a packet-offload `XFRM_POLICY_CPU_ACQUIRE` policy, `xfrm_state_find()`
+  can return a state that a walk stopped on without checking it.
+- [`patches/0002`](patches/0002-xfrm-state-ignore-other-CPUs-acquires-in-xfrm_state_.patch):
+  another CPU's pending acquire stops this CPU from starting its own, so
+  per-CPU SAs are negotiated one CPU at a time.
+- [`patches/0003`](patches/0003-xfrm-state-use-the-fallback-SA-while-a-per-CPU-acqui.patch):
   while a per-CPU acquire is pending, `xfrm_state_find()` ignores the valid
   fallback SA and returns `-EAGAIN`, so packets on that CPU are dropped until the
-  key manager installs the CPU's SA. Sent to the ipsec tree.
-- [`patches/0002`](patches/0002-xfrm-state-prefer-the-CPU-s-own-SA-over-a-newer-fall.patch):
+  key manager installs the CPU's SA. Also covers a wildcard-source fallback.
+  This is v1's fix (the only patch in 1.0.0), extended.
+- [`patches/0004`](patches/0004-xfrm-state-prefer-the-CPU-s-own-SA-over-a-newer-fall.patch):
   `xfrm_state_look_at()` lets a fallback SA added after the CPU's own SA replace
-  it as best, which starts a duplicate acquire and leaves the CPU's SA unused. Not
-  yet sent upstream and has no `Signed-off-by` yet.
+  it as best, which starts a duplicate acquire and leaves the CPU's SA unused.
+  Rebased onto the v2 series; not yet sent upstream.
 
-Both were written against ipsec master (base 835912998ca5) and apply unchanged
-to the Ubuntu 7.0.0-38.38 tree: identical context, offset -24 lines, no fuzz.
-The patch files are byte-for-byte the ones submitted or prepared for upstream.
+They were written against ipsec master (base 835912998ca5) and apply in order
+to the Ubuntu 7.0.0-38.38 tree without fuzz. The patch files are the ones
+prepared for upstream, without the submitter's `Signed-off-by`.
 
 ## Provenance and pins
 
@@ -53,8 +70,8 @@ difference:
   (`CC=x86_64-linux-gnu-gcc`, `KERNELRELEASE=7.0.0-38-generic`,
   `CONFIG_DEBUG_SECTION_MISMATCH=y`, `KBUILD_BUILD_VERSION=38`,
   `CFLAGS_MODULE=-DPKG_ABI=38`, etc.), passed via `MAKEFLAGS`.
-- Builder: the tree's own `scripts/livepatch/klp-build`, run with `--no-replace`
-  so that loading this module never displaces another livepatch.
+- Builder: the tree's own `scripts/livepatch/klp-build`, with atomic replace
+  (its default), so that the module supersedes earlier releases.
 - Debug info stays on. The stock config uses `CONFIG_GENDWARFKSYMS`, so the
   modversion CRCs come from DWARF. The build does not run `debian/rules`, so no
   dbgsym or other Ubuntu packages are produced.
@@ -90,18 +107,18 @@ curl -fsSL https://get.ezghcloud.com/kernel-livepatches/apt.asc \
 echo 'deb [signed-by=/etc/apt/keyrings/ezgh-kernel-livepatches.asc] https://get.ezghcloud.com/kernel-livepatches/apt resolute main' \
   > /etc/apt/sources.list.d/ezgh-kernel-livepatches.list
 apt-get update
-apt-get install ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic
+apt-get install ezgh-livepatch-xfrm-pcpu-2-7.0.0-38-generic
 ```
 
 Compare the key with [`keys/apt.asc`](keys/apt.asc) (fingerprint
 `B42D D9D0 2D37 8220 233C  E607 5398 FA60 DA2D 5332`).
 
 - The module is installed in `/usr/lib/modules/7.0.0-38-generic/updates/ezgh/`.
-  `/usr/lib/modules-load.d/livepatch-xfrm-pcpu.conf` loads it at boot.
+  `/usr/lib/modules-load.d/zz-livepatch-xfrm-pcpu-2.conf` loads it at boot.
 - postinst runs `depmod`. It loads the patch immediately only if `uname -r` is
   `7.0.0-38-generic` and `/proc/version_signature` is exactly
   `Ubuntu 7.0.0-38.38-generic 7.0.14`. It then waits up to 120 s for
-  `/sys/kernel/livepatch/livepatch_xfrm_pcpu/transition` to reach 0, and fails
+  `/sys/kernel/livepatch/livepatch_xfrm_pcpu_2/transition` to reach 0, and fails
   the install if it does not.
 - The module is not signed with a key that the kernel trusts. This kernel does
   not enforce module signatures, so it loads with the `E` (unsigned) and `K`
@@ -110,14 +127,14 @@ Compare the key with [`keys/apt.asc`](keys/apt.asc) (fingerprint
 Check that the patch is active:
 
 ```sh
-cat /sys/kernel/livepatch/livepatch_xfrm_pcpu/enabled     # 1
-cat /sys/kernel/livepatch/livepatch_xfrm_pcpu/transition  # 0
+cat /sys/kernel/livepatch/livepatch_xfrm_pcpu_2/enabled     # 1
+cat /sys/kernel/livepatch/livepatch_xfrm_pcpu_2/transition  # 0
 ```
 
 ## Uninstall
 
 ```sh
-apt-get remove ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic
+apt-get remove ezgh-livepatch-xfrm-pcpu-2-7.0.0-38-generic
 ```
 
 prerm writes 0 to `enabled` and waits up to 120 s for the patch to go away. It
@@ -129,10 +146,10 @@ There are no GitHub Releases. The apt repository and the per-version files on
 get.ezghcloud.com are the distribution:
 
 ```
-https://get.ezghcloud.com/kernel-livepatches/files/v1.0.0/
-  livepatch-xfrm-pcpu.ko  ezgh-livepatch-xfrm-pcpu-7.0.0-38-generic_1.0.0_amd64.deb
+https://get.ezghcloud.com/kernel-livepatches/files/v1.1.0/
+  livepatch-xfrm-pcpu-2.ko  ezgh-livepatch-xfrm-pcpu-2-7.0.0-38-generic_1.1.0_amd64.deb
   SHA256SUMS  SHA256SUMS.asc  BUILDINFO  static-check.txt
-  config-7.0.0-38-generic  0001-*.patch  0002-*.patch
+  config-7.0.0-38-generic  0001-*.patch ... 0004-*.patch
 ```
 
 ```sh
@@ -142,7 +159,7 @@ sha256sum -c SHA256SUMS
 gpgv --keyring ./apt.gpg InRelease   # .../kernel-livepatches/apt/dists/resolute/InRelease
 ```
 
-`SHA256SUMS` also covers the stock config and both patches, so the inputs can be
+`SHA256SUMS` also covers the stock config and the patches, so the inputs can be
 compared with this repository.
 
 ## Build

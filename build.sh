@@ -21,8 +21,10 @@ GCC_PKG=15.2.0-16ubuntu1
 BINUTILS_PKG=2.46-3ubuntu2
 GCC_TEXT="x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
 LD_TEXT="GNU ld (GNU Binutils for Ubuntu) 2.46"
-NAME=livepatch-xfrm-pcpu
-DEB_NAME=ezgh-livepatch-xfrm-pcpu-$KVER
+# Cumulative atomic-replace module. Each release takes a new module and package
+# name, so the upgrade loads it over the old one instead of unloading that first.
+NAME=livepatch-xfrm-pcpu-2
+DEB_NAME=ezgh-livepatch-xfrm-pcpu-2-$KVER
 DEB_VER=1.1.0
 
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -84,8 +86,9 @@ echo "ok patches: apply to the Ubuntu tree"
 if [ "${1:-}" = --preflight ]; then echo "preflight OK"; exit 0; fi
 
 # --- Build ------------------------------------------------------------------
-# --no-replace: never displace another livepatch loaded on the host.
-./scripts/livepatch/klp-build --no-replace --keep-tmp -j"$(nproc)" \
+# Atomic replace (klp-build default): loading supersedes every livepatch on the
+# host in one transition, including 1.0.0 (livepatch_xfrm_pcpu).
+./scripts/livepatch/klp-build --keep-tmp -j"$(nproc)" \
 	-o "$OUT/$NAME.ko" "$WORK"/patches/*.patch 2>&1 | tee "$OUT/klp-build.log"
 cp klp-tmp/diff/diff.log "$OUT/klp-diff.log"
 
@@ -96,7 +99,9 @@ PKG=$WORK/pkg
 rm -rf "$PKG"
 install -D -m 0644 "$OUT/$NAME.ko" "$PKG/usr/lib/modules/$KVER/updates/ezgh/$NAME.ko"
 install -d "$PKG/usr/lib/modules-load.d" "$PKG/DEBIAN"
-echo "${NAME//-/_}" > "$PKG/usr/lib/modules-load.d/$NAME.conf"
+# Sorts after 1.0.0's livepatch-xfrm-pcpu.conf, which stays installed (PM never
+# removes packages): at boot this module loads last and replaces that one.
+echo "${NAME//-/_}" > "$PKG/usr/lib/modules-load.d/zz-$NAME.conf"
 install -m 0755 "$REPO"/packaging/{postinst,prerm,postrm} "$PKG/DEBIAN/"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: $DEB_NAME
@@ -108,9 +113,11 @@ Section: kernel
 Priority: optional
 Homepage: https://github.com/ezgamehost/kernel-livepatches
 Description: livepatch for xfrm per-CPU SA fallback bugs ($SIG)
- Livepatch module $NAME (sysfs ${NAME//-/_}) carrying four xfrm_state fixes
- for per-CPU IPsec SAs (Fixes: 1ddf9916ac09). Loads at install when the
- running kernel is exactly $SIG, and at every boot of $KVER.
+ Cumulative atomic-replace livepatch module $NAME (sysfs ${NAME//-/_})
+ carrying four xfrm_state fixes for per-CPU IPsec SAs (Fixes: 1ddf9916ac09).
+ Loading it replaces 1.0.0 (livepatch_xfrm_pcpu) and any other livepatch in
+ one transition. Loads at install when the running kernel is exactly $SIG,
+ and at every boot of $KVER.
 EOF
 DEB=$OUT/${DEB_NAME}_${DEB_VER}_amd64.deb
 dpkg-deb --root-owner-group -Zxz --build "$PKG" "$DEB"

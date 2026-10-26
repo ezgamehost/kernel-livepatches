@@ -1,7 +1,7 @@
 #!/bin/sh
 # Disable the livepatch, wait for the transition, then unload it.
 set -e
-MOD=livepatch_xfrm_pcpu
+MOD=livepatch_xfrm_pcpu_2
 LP=/sys/kernel/livepatch/$MOD
 
 if [ -d "$LP" ]; then
