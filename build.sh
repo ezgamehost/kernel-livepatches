@@ -74,13 +74,21 @@ want "kernelrelease" "$(make -s kernelrelease)" "$KVER"
 want "version signature" "$(sed -n 's/^CONFIG_VERSION_SIGNATURE="\(.*\)"$/\1/p' .config)" "$SIG"
 
 cp "$REPO"/patches/*.patch "$WORK/patches/"
-# Later patches build on earlier ones: apply in order, then restore the tree
-# for klp-build, which applies them the same way.
+# Later patches build on earlier ones, but klp-build refreshes each patch
+# against the unpatched tree. Apply them in order, diff the result into one
+# patch for klp-build, then restore the tree.
+files=$(sed -n 's|^+++ b/||p' "$WORK"/patches/*.patch | sort -u)
+mkdir -p "$WORK/orig"
+cp --parents $files "$WORK/orig/"
 applied=()
 for p in "$WORK"/patches/*.patch; do
 	sed -n '/^-- /q;p' "$p" | git apply -v
 	applied=("$p" "${applied[@]}")
 done
+SERIES=$WORK/series.patch
+for f in $files; do
+	diff -u --label "a/$f" --label "b/$f" "$WORK/orig/$f" "$f" || [ $? = 1 ]
+done > "$SERIES"
 for p in "${applied[@]}"; do sed -n '/^-- /q;p' "$p" | git apply -R; done
 echo "ok patches: apply to the Ubuntu tree"
 if [ "${1:-}" = --preflight ]; then echo "preflight OK"; exit 0; fi
@@ -89,7 +97,7 @@ if [ "${1:-}" = --preflight ]; then echo "preflight OK"; exit 0; fi
 # Atomic replace (klp-build default): loading supersedes every livepatch on the
 # host in one transition, including 1.0.0 (livepatch_xfrm_pcpu).
 ./scripts/livepatch/klp-build --keep-tmp -j"$(nproc)" \
-	-o "$OUT/$NAME.ko" "$WORK"/patches/*.patch 2>&1 | tee "$OUT/klp-build.log"
+	-o "$OUT/$NAME.ko" "$SERIES" 2>&1 | tee "$OUT/klp-build.log"
 cp klp-tmp/diff/diff.log "$OUT/klp-diff.log"
 
 "$REPO/check.sh" "$OUT/$NAME.ko" "$WORK/stock" "$SRC" | tee "$OUT/static-check.txt"
