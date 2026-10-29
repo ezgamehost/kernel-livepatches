@@ -28,7 +28,10 @@ rel=$ROOT/files/$VERSION
 [ ! -e "$rel" ] || cmp -s "$OUT/SHA256SUMS" "$rel/SHA256SUMS" || die "$rel is already published with different contents"
 mkdir -p "$pool" "$rel"
 cp "$deb" "$pool/"
-cp "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*} "$rel/"
+# A livepatch build has all of these; ezgh-livepatch-boot only SHA256SUMS and the .deb.
+for f in "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*}; do
+	[ ! -e "$f" ] || cp "$f" "$rel/"
+done
 cp "$deb" "$rel/"
 cp "$REPO/keys/apt.asc" "$ROOT/apt.asc"
 

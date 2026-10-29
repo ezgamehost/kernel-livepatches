@@ -149,13 +149,46 @@ cat /sys/kernel/livepatch/livepatch_xfrm_pcpu_2/enabled     # 1
 cat /sys/kernel/livepatch/livepatch_xfrm_pcpu_2/transition  # 0
 ```
 
+### Hosts that boot with dracut: `ezgh-livepatch-boot`
+
+Install `ezgh-livepatch-boot` too on any host whose initramfs is built by dracut
+(Ubuntu 26.04 installs that use dracut rather than initramfs-tools). dracut copies
+the modules listed in `modules-load.d` into the initramfs and strips them. Stripping
+rewrites a livepatch's `.klp.rela.*` sections into a type the kernel ignores, so
+the patch loads from the initramfs without its relocations: `enabled` is 1,
+`transition` 0 and the build-id matches, but its `.klp.sym.*` symbols stay at 0 in
+`/proc/kallsyms` and the patched code faults on first use. On gp1-01 (2026-10-29)
+that was a general protection fault in `xfrm_state_find` at the first per-CPU
+acquire, and a kernel panic.
+
+The package adds `/usr/lib/dracut/dracut.conf.d/90-ezgh-livepatch.conf`
+(`omit_drivers` for every `livepatch_*` module) and a dracut module that drops
+their `modules-load.d` entries from the image, then regenerates the dracut
+initramfs of each kernel that has EZGH livepatches. The livepatch then loads from
+the root filesystem, unstripped. It takes effect at the next boot. It has no
+postrm, because regenerating after removal would put the stripped module back.
+Hosts on initramfs-tools never put the module in the initramfs and need nothing.
+
+Check a loaded patch's relocations (as root):
+
+```sh
+grep '\[livepatch_xfrm_pcpu_2\]' /proc/kallsyms | grep ' .klp.sym.'   # no address may be 0
+lsinitrd | grep -i livepatch                                         # dracut: only the modprobe.d blacklist
+```
+
+Build it with `OUT=out boot/build.sh` in `ubuntu:26.04` (seconds; no kernel tree),
+and publish it from a `boot-v*` tag.
+
 ## Uninstall
 
 ```sh
 apt-get remove ezgh-livepatch-xfrm-pcpu-2-7.0.0-38-generic
 ```
 
-prerm writes 0 to `enabled` and waits up to 120 s for the patch to go away. It
+prerm writes 0 to `enabled` and waits up to 120 s for the patch to go away.
+From the next livepatch package on it does so only on removal: 1.1.0's prerm also
+runs on an in-place upgrade, which would unpatch a running host until the new
+postinst loads the module again, so 1.1.0 is never upgraded in place. It
 then unloads the module, and fails loudly if either step does not complete.
 
 ## Verify a download

@@ -1,6 +1,9 @@
 #!/bin/sh
 # Disable the livepatch, wait for the transition, then unload it.
 set -e
+# Only on removal: an upgrade's old prerm must not unpatch a running host (the new
+# package's postinst would load the module again, after a window without it).
+case "$1" in remove | deconfigure) ;; *) exit 0 ;; esac
 MOD=livepatch_xfrm_pcpu_2
 LP=/sys/kernel/livepatch/$MOD
 

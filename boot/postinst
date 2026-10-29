@@ -1,0 +1,15 @@
+#!/bin/sh
+# Regenerate the dracut initramfs of every kernel that has EZGH livepatches, so the
+# livepatch modules (and their modules-load.d entries) leave it. Hosts on
+# initramfs-tools never put them there: nothing to do.
+set -e
+case "$1" in configure | abort-remove | abort-deconfigure) ;; *) exit 0 ;; esac
+dpkg-query -W -f='${Status}' dracut 2>/dev/null | grep -q 'install ok installed' || exit 0
+for d in /usr/lib/modules/*/updates/ezgh; do
+	[ -d "$d" ] || continue
+	k=${d#/usr/lib/modules/}
+	k=${k%/updates/ezgh}
+	[ -e "/boot/initrd.img-$k" ] || continue
+	echo "ezgh-livepatch-boot: regenerating /boot/initrd.img-$k without EZGH livepatches"
+	dracut -q --force "/boot/initrd.img-$k" "$k"
+done
