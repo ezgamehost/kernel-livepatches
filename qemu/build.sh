@@ -6,7 +6,7 @@
 # Writes the host's binary packages, the source package and SHA256SUMS to $OUT.
 #
 # Runs as root inside ubuntu:26.04 (amd64), see README.md ("QEMU"). Hours: Ubuntu's
-# rules build every system and user target. Env: WORK (default /build), OUT,
+# rules build every system and user target. Env: WORK (default /build), OUT, JOBS (default 16),
 # HOST_UID chowns OUT at the end. Mount the host CA bundle at /hostca.pem.
 set -euo pipefail
 
@@ -68,7 +68,10 @@ export SOURCE_DATE_EPOCH
 mv debian/changelog.new debian/changelog
 [ "$(dpkg-parsechangelog -S Version)" = "$VERSION" ] || die "changelog version is not $VERSION"
 
-DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" dpkg-buildpackage --build=source,any -uc -us
+# Capped: CI runners report 80 CPUs with far less memory, and 80 parallel compiles and links
+# got the build container killed.
+JOBS=${JOBS:-$(( $(nproc) < 16 ? $(nproc) : 16 ))}
+DEB_BUILD_OPTIONS="nocheck parallel=$JOBS" dpkg-buildpackage --build=source,any -uc -us
 cd "$WORK"
 
 # Check the built QEMU before anything is published.
