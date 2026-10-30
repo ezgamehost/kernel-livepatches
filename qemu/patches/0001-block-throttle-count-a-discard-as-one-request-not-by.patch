@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Thu, 29 Oct 2026 18:04:41 -0700
+Subject: [PATCH] block/throttle: count a discard as one request, not by its
+ length
+
+throttle_co_pdiscard() charges a discard's full length to the throttle
+group's bps buckets, as if it were a write of that many bytes. A guest
+that trims free space (fstrim, or a filesystem mounted with -o discard)
+then exhausts the group's bps budget on requests that move no data, and
+the reads and writes queued behind them wait for seconds: with
+bps-total=10000000, a 4 KiB write issued after a 100 MiB discard waits
+about 10 s.
+
+Charge a discard as a single request of size zero. It still counts
+against the iops limits, so a guest can't issue them without bound, but
+it no longer consumes the bps budget. The BlockBackend's own I/O
+throttling doesn't throttle discards at all (blk_co_do_pdiscard()), so
+the throttle filter was the only path that charged them by length.
+
+Assisted-by: LLM
+---
+ block/throttle.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/block/throttle.c b/block/throttle.c
+index 97972d1..267f682 100644
+--- a/block/throttle.c
++++ b/block/throttle.c
+@@ -150,7 +150,8 @@ static int coroutine_fn GRAPH_RDLOCK
+ throttle_co_pdiscard(BlockDriverState *bs, int64_t offset, int64_t bytes)
+ {
+     ThrottleGroupMember *tgm = bs->opaque;
+-    throttle_group_co_io_limits_intercept(tgm, bytes, THROTTLE_WRITE);
++    /* A discard moves no data: one request, no bytes */
++    throttle_group_co_io_limits_intercept(tgm, 0, THROTTLE_WRITE);
+ 
+     return bdrv_co_pdiscard(bs->file, offset, bytes);
+ }

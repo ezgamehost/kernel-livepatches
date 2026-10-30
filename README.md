@@ -229,7 +229,36 @@ keeps a copy of every object, and then rebuilds the patched objects. `mkrepo.sh`
 scripts from a private repository on internal runners and uploads the signed
 tree to get.ezghcloud.com.
 
+## QEMU
+
+The same apt repository carries Ubuntu's QEMU rebuilt with the patches in
+[`qemu/patches`](qemu/patches), as `1:10.2.1+ds-1ubuntu3.2+ezgh1`: the packages a
+hypervisor installs from the `qemu` source (`qemu-system-x86`, `-common`, `-gui`,
+`-modules-opengl`, `-modules-spice`, `qemu-block-extra`, `qemu-utils`). Ubuntu's
+`qemu-system-data` stays as it is. Hosts get them as exact pins in their OS release.
+
+- [`0001`](qemu/patches/0001-block-throttle-count-a-discard-as-one-request-not-by.patch):
+  the throttle filter charged a discard's full length to the group's bps buckets, so a
+  guest trimming free space used up its volume's MB/s budget and its writes waited for
+  seconds behind the trims. A discard now counts as one request of no bytes: still
+  against the IOPS limits, never against the bps ones.
+
+[`qemu/check.sh`](qemu/check.sh) tests this with `qemu-io` over a `null-co` disk (no
+guest or KVM): a 4 KiB write after a 100 MiB discard through a 10 MB/s group must
+finish in under 1 s (stock QEMU: 10.4 s), and 30 discards through a 10 IOPS group must
+take at least 1.5 s. Run it on a host after an upgrade; the build runs it against the
+built `qemu-utils` before anything is published.
+
+`OUT=out qemu/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
+takes hours, since Ubuntu's rules build every target, and publishes from a
+`qemu-v10.2.1+ds-1ubuntu3.2+ezgh1` tag. The release files hold the source package
+(`.dsc`, `.debian.tar.xz`, the patches); its `qemu_10.2.1+ds.orig.tar.xz` is
+Ubuntu's, from the same snapshot.
+
+A running VM keeps the QEMU it started with until it restarts or migrates.
+
 ## License
 
 GPL-2.0, see [LICENSE](LICENSE). The patches are contributions to the Linux
-kernel under the same license.
+kernel under the same license; the QEMU patches are contributions to QEMU, under
+GPL-2.0-or-later like the file they change.

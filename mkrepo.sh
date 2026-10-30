@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 #
-# Add a build's .deb to the apt repository in ROOT_DIR/apt (pool/ holding the
+# Add a build's .debs to the apt repository in ROOT_DIR/apt (pool/ holding the
 # already-published packages), put its files in ROOT_DIR/files/VERSION, and
 # sign the repository. ROOT_DIR mirrors https://get.ezghcloud.com/kernel-livepatches/.
 # Runs as root in ubuntu:26.04 with the armored private key in $APT_SIGNING_KEY.
@@ -19,20 +19,27 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -q --no-install-recommends apt-utils gnupg >/dev/null
 
 (cd "$OUT" && sha256sum -c SHA256SUMS)
-deb=$(ls "$OUT"/*.deb)
-pkg=$(dpkg-deb -f "$deb" Package)
-pool=$P/pool/main/e/$pkg
-dest=$pool/$(basename "$deb")
-[ ! -e "$dest" ] || cmp -s "$deb" "$dest" || die "$dest is already published with different contents"
+debs=("$OUT"/*.deb)
+[ -e "${debs[0]}" ] || die "no .deb in $OUT"
 rel=$ROOT/files/$VERSION
 [ ! -e "$rel" ] || cmp -s "$OUT/SHA256SUMS" "$rel/SHA256SUMS" || die "$rel is already published with different contents"
-mkdir -p "$pool" "$rel"
-cp "$deb" "$pool/"
-# A livepatch build has all of these; ezgh-livepatch-boot only SHA256SUMS and the .deb.
-for f in "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*}; do
+for deb in "${debs[@]}"; do
+	pkg=$(dpkg-deb -f "$deb" Package)
+	dest=$P/pool/main/${pkg:0:1}/$pkg/$(basename "$deb")
+	[ ! -e "$dest" ] || cmp -s "$deb" "$dest" || die "$dest is already published with different contents"
+done
+mkdir -p "$rel"
+for deb in "${debs[@]}"; do
+	pkg=$(dpkg-deb -f "$deb" Package)
+	mkdir -p "$P/pool/main/${pkg:0:1}/$pkg"
+	cp "$deb" "$P/pool/main/${pkg:0:1}/$pkg/"
+	cp "$deb" "$rel/"
+done
+# A livepatch build has all of these; ezgh-livepatch-boot only SHA256SUMS and the .deb;
+# a QEMU build its source package (.dsc, .debian.tar.xz) and patches.
+for f in "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*,*.dsc,*.debian.tar.xz}; do
 	[ ! -e "$f" ] || cp "$f" "$rel/"
 done
-cp "$deb" "$rel/"
 cp "$REPO/keys/apt.asc" "$ROOT/apt.asc"
 
 cd "$P"
