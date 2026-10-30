@@ -30,6 +30,9 @@ export DEBIAN_FRONTEND=noninteractive
 "$REPO/snapshot-apt.sh"
 apt-get build-dep -y -q --arch-only "qemu=$UBUNTU_VER"
 apt-get install -y -q --no-install-recommends dpkg-dev quilt bc git
+# An arch-only build takes the user-mode vDSO archive from the installed qemu-system-data,
+# as Debian's arch builds do (Ubuntu builds arch and indep together, so it doesn't list it).
+apt-get install -y -q --no-install-recommends "qemu-system-data=$UBUNTU_VER"
 git config --global --add safe.directory "$REPO"
 
 mkdir -p "$WORK" "$OUT"
