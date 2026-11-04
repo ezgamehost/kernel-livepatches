@@ -1,0 +1,8 @@
+# Development files, the sample config and FSAL_NULL (a stacking FSAL Files doesn't use).
+etc/ganesha/ganesha.conf
+usr/include/*
+usr/lib/*/ganesha/libfsalnull.so
+usr/lib/*/libntirpc.so
+usr/lib/*/libntirpcmonitoring.so
+usr/lib/*/pkgconfig/libntirpc.pc
+usr/lib/ganesha/libganesha_nfsd.so

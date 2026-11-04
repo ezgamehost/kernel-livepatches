@@ -1,0 +1,3 @@
+usr/lib/*/ganesha/libfsalceph.so
+usr/lib/ganesha/libganesha_rados_recov.so
+usr/lib/ganesha/libganesha_rados_urls.so

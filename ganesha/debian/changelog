@@ -1,0 +1,8 @@
+nfs-ganesha (15.10-1+ezgh1) resolute; urgency=medium
+
+  * Upstream NFS-Ganesha V15.10 (38f542cd5ef8) with its bundled ntirpc, for
+    EZGH Files gateways: RPC-with-TLS (OpenSSL, kTLS), per-export QoS,
+    FSAL_CEPH, rados_cluster recovery and RADOS URLs, built against upstream
+    Ceph 20.2.4 client libraries. NFSv4 only: no NFSv3, NLM, RQUOTA or 9P.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Wed, 04 Nov 2026 20:00:00 +0000

@@ -1,0 +1,64 @@
+Source: nfs-ganesha
+Section: net
+Priority: optional
+Maintainer: EZGH Cloud <matthewzhaocc@gmail.com>
+Standards-Version: 4.7.0
+Homepage: https://github.com/nfs-ganesha/nfs-ganesha
+Vcs-Browser: https://github.com/ezgamehost/kernel-livepatches/tree/main/ganesha
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ bison,
+ cmake,
+ flex,
+ pkgconf,
+ libacl1-dev,
+ libblkid-dev,
+ libcap-dev,
+ libcephfs-dev (>= 20.2.4),
+ libdbus-1-dev,
+ libjemalloc-dev,
+ libkrb5-dev,
+ libnfsidmap-dev,
+ libnsl-dev,
+ librados-dev (>= 20.2.4),
+ libssl-dev,
+ liburcu-dev,
+ uuid-dev,
+
+Package: nfs-ganesha
+Architecture: amd64 arm64
+Depends:
+ default-dbus-system-bus | dbus-system-bus,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: NFS server in user space (EZGH build)
+ NFS-Ganesha is an NFS server running in user space. This is upstream V15.10
+ built for EZGH Files gateways: NFSv4 with RPC-with-TLS (OpenSSL, kTLS) and
+ per-export QoS, with its bundled ntirpc.
+ .
+ This package contains ganesha.nfsd and its libraries.
+
+Package: nfs-ganesha-ceph
+Architecture: amd64 arm64
+Section: libs
+Depends:
+ libcephfs2 (>= 20.2.4),
+ librados2 (>= 20.2.4),
+ nfs-ganesha (= ${binary:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: NFS-Ganesha CephFS FSAL and RADOS backends (EZGH build)
+ FSAL_CEPH, the rados_kv/rados_ng/rados_cluster recovery backends and RADOS
+ URL configuration, built against upstream Ceph 20.2.4 client libraries.
+
+Package: nfs-ganesha-rados-grace
+Architecture: amd64 arm64
+Depends:
+ librados2 (>= 20.2.4),
+ nfs-ganesha (= ${binary:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: NFS-Ganesha ganesha-rados-grace tool (EZGH build)
+ ganesha-rados-grace manages the shared grace database of a rados_cluster
+ NFS-Ganesha cluster.

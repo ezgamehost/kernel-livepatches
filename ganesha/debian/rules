@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+# Upstream NFS-Ganesha with its bundled ntirpc, configured as Team P tested it (files-stack
+# deploy/proofs/image-upstream): NFSv4 with TLS (OpenSSL) and QoS, FSAL_CEPH, RADOS recovery and
+# URLs; every other FSAL, protocol and tool off. Ganesha's libraries in /usr/lib/ganesha (RPATH).
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+%:
+	dh $@ --buildsystem=cmake --sourcedirectory=src
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DLIB_INSTALL_DIR=/usr/lib/ganesha \
+		-DCMAKE_INSTALL_RPATH=/usr/lib/ganesha \
+		-DFSAL_DESTINATION=/usr/lib/$(DEB_HOST_MULTIARCH)/ganesha \
+		-DUSE_FSAL_CEPH=ON -DUSE_RADOS_RECOV=ON -DRADOS_URLS=ON \
+		-DUSE_TLS=ON -DUSE_OPENSSL=ON -DENABLE_QOS=ON \
+		-DUSE_FSAL_VFS=OFF -DUSE_FSAL_PROXY_V4=OFF -DUSE_FSAL_PROXY_V3=OFF -DUSE_FSAL_GLUSTER=OFF \
+		-DUSE_FSAL_GPFS=OFF -DUSE_FSAL_LUSTRE=OFF -DUSE_FSAL_RGW=OFF -DUSE_FSAL_XFS=OFF \
+		-DUSE_FSAL_KVSFS=OFF -DUSE_FSAL_LIZARDFS=OFF -DUSE_FSAL_SAUNAFS=OFF -DUSE_FSAL_MEM=OFF \
+		-DUSE_GUI_ADMIN_TOOLS=OFF -DUSE_ADMIN_TOOLS=OFF -DUSE_LTTNG=OFF -DUSE_MAN_PAGE=OFF \
+		-D_MSPAC_SUPPORT=OFF -DUSE_9P=OFF -DUSE_NLM=OFF -DUSE_RQUOTA=OFF -DUSE_NFS3=OFF \
+		-DDISTNAME_HAS_GIT_DATA=OFF
+
+# No test suite is built (USE_GTEST is off); ganesha/check.sh tests the installed packages.
+override_dh_auto_test:
+
+override_dh_shlibdeps:
+	dh_shlibdeps -l$(CURDIR)/debian/nfs-ganesha/usr/lib/ganesha:$(CURDIR)/debian/nfs-ganesha-ceph/usr/lib/ganesha

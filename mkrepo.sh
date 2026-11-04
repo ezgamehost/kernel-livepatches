@@ -36,8 +36,9 @@ for deb in "${debs[@]}"; do
 	cp "$deb" "$rel/"
 done
 # A livepatch build has all of these; ezgh-livepatch-boot only SHA256SUMS and the .deb;
-# a QEMU build its source package (.dsc, .debian.tar.xz) and patches.
-for f in "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,*.ko,*.patch,config-*,*.dsc,*.debian.tar.xz}; do
+# a QEMU build its source package (.dsc, .debian.tar.xz) and patches; an NFS-Ganesha build
+# its source package (with .orig.tar.xz) and ganesha-check.txt.
+for f in "$OUT"/{SHA256SUMS,BUILDINFO,static-check.txt,ganesha-check.txt,*.ko,*.patch,config-*,*.dsc,*.orig.tar.xz,*.debian.tar.xz}; do
 	[ ! -e "$f" ] || cp "$f" "$rel/"
 done
 cp "$REPO/keys/apt.asc" "$ROOT/apt.asc"

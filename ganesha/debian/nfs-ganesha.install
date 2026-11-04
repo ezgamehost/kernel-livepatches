@@ -1,0 +1,6 @@
+usr/bin/ganesha.nfsd
+usr/lib/*/libntirpc.so.*
+usr/lib/*/libntirpcmonitoring.so.*
+usr/lib/ganesha/libganesha_monitoring.so
+usr/lib/ganesha/libganesha_nfsd.so.*
+src/scripts/ganeshactl/org.ganesha.nfsd.conf usr/share/dbus-1/system.d
