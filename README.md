@@ -260,7 +260,7 @@ A running VM keeps the QEMU it started with until it restarts or migrates.
 ## NFS-Ganesha
 
 The same apt repository carries upstream NFS-Ganesha V15.10 for EZGH Files gateway hosts,
-as `15.10-1+ezgh1`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
+as `15.10-1+ezgh2`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
 names (and `/usr/bin/ganesha.nfsd`) of Ubuntu's packages. Ubuntu 26.04's `6.5-8` has
 neither RPC-with-TLS nor per-export QoS, and it is built against Ubuntu's Ceph 20.2.0
 libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build has:
@@ -270,42 +270,70 @@ libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build
   configuration (`%url`, `RADOS_URLS`) and `ganesha-rados-grace`; NFSv4 only (no NFSv3,
   NLM, RQUOTA or 9P), no other FSAL, no admin tools. The cmake flags are files-stack's
   `deploy/proofs/image-upstream`, the build Files' proofs tested.
+- One patch, [`ganesha/patches`](ganesha/patches) (applied by `build.sh` with quilt):
+  `ganesha.nfsd` exits at startup when `TLS_CONFIG` enables TLS and its certificate or key
+  doesn't load (V15.10 logs it and serves without TLS), and SIGHUP (or D-Bus
+  `reread_config`) rereads `TLS_CONFIG`: a certificate and key that load into a fresh
+  `SSL_CTX` are swapped in for new connections, established TLS sessions keep the one they
+  started with, and one that fails to load leaves the current certificate in place, with an
+  error logged. V15.10 reads `TLS_CONFIG` only at startup.
 - Upstream Ceph `20.2.4-1noble` client libraries from `download.ceph.com/debian-20.2.4`
   (checked against [`ganesha/ceph-release.asc`](ganesha/ceph-release.asc), fingerprint
   `08B7 3419 AC32 B4E9 66C1  A330 E84A C2C0 460F 3994`), the repository the hosts' OS
   release already carries for `librados2`. `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`
-  depend on `libcephfs2`/`librados2` `>= 20.2.4`. Those come from noble, and `libcephfs2`
-  needs noble's `libicu74`, so a host needs noble `main` (not only `universe`) to install
-  them.
-- The bundled ntirpc (`libntirpc.so.15.7`, in `nfs-ganesha`; Ubuntu's `libntirpc6` is
-  `.so.6` and may stay installed). Ganesha's own libraries are in `/usr/lib/ganesha`
-  (RPATH), FSAL_CEPH in `/usr/lib/x86_64-linux-gnu/ganesha`, as Ubuntu lays them out.
+  depend on `libcephfs2` and `librados2` at exactly `20.2.4-1noble`: `libcephfs2` uses
+  hundreds of `libceph-common`'s private symbols, which come from `librados2`, so the two
+  move in lockstep and never with a different Ceph build.
+- `libcephfs2` needs ICU 74, which only noble has: the release also publishes Ubuntu's
+  noble-updates `libicu74` `74.2-1ubuntu3.1`, unchanged, from the same Ubuntu snapshot, so
+  a gateway host needs nothing from noble `main` (`librados2`'s `libthrift-0.19.0t64` comes
+  from noble `universe`, which the cell's OS release already carries). The build installs that same version
+  (noble pinned at priority 100 there, so it serves only what resolute lacks).
+- The bundled ntirpc (`libntirpc.so.15.7`, in `nfs-ganesha`; Ubuntu's `libntirpc6.3` is
+  `.so.6.3` and may stay installed). Ganesha's own libraries are in `/usr/lib/ganesha`
+  (RPATH), ntirpc and FSAL_CEPH in `/usr/lib/x86_64-linux-gnu` (`ganesha/` for the FSAL), as
+  Ubuntu lays them out.
+- `nfs-ganesha` depends on `libtirpc-common` for `/etc/netconfig`, without which
+  `ganesha.nfsd` exits at startup.
 - Upstream's D-Bus policy for `org.ganesha.nfsd`, but no systemd units and no
   `/etc/ganesha`: files-stack ships `ganesha@.service` with filesd and renders each rank's
-  config, so nothing starts on install.
+  config, so nothing starts on install. Each rank owns `rank<r>.org.ganesha.nfsd` (its
+  `Dbus_Name_Prefix`); files-stack's `files-gateway` Ansible role installs the policy that
+  lets root own those.
 
 The source is the `V15.10` tag at `38f542cd5ef8` with its submodules (ntirpc with its
-prometheus-cpp-lite, and libkmip), cloned from GitHub; the build fails if the tag or a submodule points anywhere else. The
-packaging is [`ganesha/debian`](ganesha/debian), with no patches.
+prometheus-cpp-lite, and libkmip), cloned from GitHub; the build fails if the tag or a
+submodule points anywhere else. The packaging is [`ganesha/debian`](ganesha/debian).
 
 [`ganesha/check.sh`](ganesha/check.sh) checks the installed packages without a cluster:
 every binary and library resolves its libraries, `libcephfs.so.2` and `librados.so.2` come
-from Ceph's `>= 20.2.4` packages, ntirpc from `nfs-ganesha` with OpenSSL (not GnuTLS),
-and TLS and QoS are compiled in (`ganesha.nfsd` is run on throwaway configs that it stops
-reading before it binds anything). Ganesha reads `TLS_CONFIG` and `QOS_DEFAULT_CONFIG` only
-when they are, so an out-of-range value in either must stop it, a valid pair (TLS on with
-kTLS and a throwaway certificate, QoS on) must get past both, and a missing certificate must
-make OpenSSL fail to initialize TLS. Run it on a host after an upgrade; the build runs it
-before anything is published and publishes its output as `ganesha-check.txt`.
+from Ceph's packages at one and the same version (`>= 20.2.4`) and they and the FSAL and
+RADOS modules resolve every symbol (`ldd -r`), ntirpc comes from `nfs-ganesha` with
+OpenSSL (not GnuTLS), and TLS and QoS are compiled in (`ganesha.nfsd` is run on throwaway
+configs that it stops reading before it binds anything). Ganesha reads `TLS_CONFIG` and
+`QOS_DEFAULT_CONFIG` only when they are, so an out-of-range value in either must stop it,
+and a valid pair (TLS on with kTLS and a throwaway certificate, QoS on) must get past both
+with the RADOS URLs library loaded; the `rados_cluster` recovery backend must load; and a
+missing certificate must make `ganesha.nfsd` exit at startup. Then it starts a server on
+`127.0.0.1:32049` (`PORT`) with a throwaway certificate, checks that an `openssl s_client`
+handshake gets it, replaces the certificate and key files, sends SIGHUP and checks that a
+new handshake gets the new certificate, and that a broken certificate on SIGHUP leaves the
+new one in place. Run it on a host after an upgrade; the build runs it before anything is
+published and publishes its output as `ganesha-check.txt`.
+[`ganesha/gateway-check.sh`](ganesha/gateway-check.sh) installs what a gateway host gets
+(the Ubuntu snapshot's resolute and noble `universe`, this repository, download.ceph.com,
+the exact versions)
+from the published repositories and runs `check.sh` on it; the publish CI runs it after
+publishing.
 
 `OUT=out ganesha/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
-takes minutes, and publishes from a `ganesha-v15.10-1+ezgh1` tag. arm64 builds too, as a
+takes minutes, and publishes from a `ganesha-v15.10-1+ezgh2` tag. arm64 builds too, as a
 smoke of the packaging, with `snapshot-apt.sh` pointed at `ports.ubuntu.com` (the snapshot
 has no arm64); only amd64 is published. The release files hold the source package
 (`.dsc`, `.orig.tar.xz`, `.debian.tar.xz`).
 
-Ganesha is LGPL-3.0-or-later and ntirpc BSD-style; `ganesha/debian` is GPL-2.0 like the
-rest of this repository.
+Ganesha is LGPL-3.0-or-later and ntirpc BSD-style, and the patch is a contribution to them
+under their licenses; `ganesha/debian` is GPL-2.0 like the rest of this repository.
 
 ## License
 

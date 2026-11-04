@@ -30,6 +30,7 @@ Package: nfs-ganesha
 Architecture: amd64 arm64
 Depends:
  default-dbus-system-bus | dbus-system-bus,
+ libtirpc-common,
  ${misc:Depends},
  ${shlibs:Depends},
 Description: NFS server in user space (EZGH build)
@@ -43,19 +44,21 @@ Package: nfs-ganesha-ceph
 Architecture: amd64 arm64
 Section: libs
 Depends:
- libcephfs2 (>= 20.2.4),
- librados2 (>= 20.2.4),
+ libcephfs2 (= 20.2.4-1noble),
+ librados2 (= 20.2.4-1noble),
  nfs-ganesha (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Description: NFS-Ganesha CephFS FSAL and RADOS backends (EZGH build)
  FSAL_CEPH, the rados_kv/rados_ng/rados_cluster recovery backends and RADOS
  URL configuration, built against upstream Ceph 20.2.4 client libraries.
+ libcephfs2 uses libceph-common's private symbols from librados2, so this package
+ depends on both at exactly the version it was built against.
 
 Package: nfs-ganesha-rados-grace
 Architecture: amd64 arm64
 Depends:
- librados2 (>= 20.2.4),
+ librados2 (= 20.2.4-1noble),
  nfs-ganesha (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},

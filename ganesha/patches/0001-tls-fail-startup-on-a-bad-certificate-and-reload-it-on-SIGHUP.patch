@@ -1,0 +1,207 @@
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Wed, 4 Nov 2026 21:00:00 +0000
+Subject: [PATCH] tls: fail startup on a bad certificate and reload it on SIGHUP
+
+V15.10 ignores tls_init()'s result, so a TLS_CONFIG whose certificate
+or key doesn't load starts a server without TLS; and reread_config()
+never rereads TLS_CONFIG, so a renewed certificate is served only after
+a restart.
+
+- nfs_set_param_from_conf() fails when TLS_CONFIG enables TLS and
+  tls_init() fails, so ganesha.nfsd exits non-zero at startup.
+- reread_config() (SIGHUP, D-Bus reread_config) loads TLS_CONFIG again
+  and calls ntirpc's new tls_reload(), which builds a fresh SSL_CTX and
+  swaps it in under a rwlock that xp_tls_init_impl() holds (read) while
+  SSL_new() takes its reference. New connections get the new
+  certificate; established sessions keep the old SSL_CTX through their
+  own reference. If the new certificate or key fails to load, the
+  current SSL_CTX stays and an error is logged. OpenSSL only.
+- tls_cred_init() allocates its SSL ex_data index once, not per call.
+
+---
+diff --git a/src/MainNFSD/nfs_init.c b/src/MainNFSD/nfs_init.c
+index 658e754..d3ddbf2 100644
+--- a/src/MainNFSD/nfs_init.c
++++ b/src/MainNFSD/nfs_init.c
+@@ -491,6 +491,32 @@ bool reread_config(void)
+ 	handle_krb5_config_update(new_krb5_param);
+ #endif /* _HAVE_GSSAPI */
+ 
++#ifdef USE_TLS
++	/* EZGH: reload TLS_CONFIG's certificate and key for new connections.
++	 * Established sessions keep theirs; on any failure the current
++	 * credential stays and the rest of the reread stands.
++	 */
++	if (tls_config.enabled) {
++		tls_config_t new_tls = { 0 };
++		char **strs[] = { &new_tls.cert_file, &new_tls.key_file,
++				  &new_tls.ca_file, &new_tls.ciphers,
++				  &new_tls.min_version };
++
++		(void)load_config_from_parse(config_struct, &tls_core, &new_tls,
++					     true, &err_type);
++		if (config_error_is_harmless(&err_type) && tls_reload(&new_tls))
++			LogEvent(COMPONENT_CONFIG,
++				 "TLS_CONFIG reloaded: new connections use %s",
++				 new_tls.cert_file);
++		else
++			LogCrit(COMPONENT_CONFIG,
++				"TLS_CONFIG not reloaded: new connections keep the current certificate");
++		for (size_t i = 0; i < ARRAY_SIZE(strs); i++)
++			if (*strs[i] != NULL)
++				gsh_free(*strs[i], MEM_COMP_CONFIG);
++	}
++#endif
++
+ 	(void)report_config_errors(&err_type, NULL, config_errs_to_log);
+ 	config_Free(config_struct);
+ 	LogDebug(COMPONENT_CONFIG, "Config reread successfully");
+@@ -791,8 +817,11 @@ int nfs_set_param_from_conf(config_file_t parse_tree,
+ 	}
+ 
+ 	/* Initialize TLS if enabled */
+-	if (tls_config.enabled == true)
+-		tls_init(&tls_config);
++	if (tls_config.enabled == true && !tls_init(&tls_config)) {
++		LogCrit(COMPONENT_INIT,
++			"TLS_CONFIG enables TLS but TLS failed to initialize");
++		return -1;
++	}
+ #endif
+ 
+ 	/* Directory Services specific configuration */
+diff --git a/src/libntirpc/ntirpc/rpc/tls.h b/src/libntirpc/ntirpc/rpc/tls.h
+index 185ee9d..77ce440 100644
+--- a/src/libntirpc/ntirpc/rpc/tls.h
++++ b/src/libntirpc/ntirpc/rpc/tls.h
+@@ -51,6 +51,7 @@ typedef struct tls_config {
+ 
+ extern tls_config_t tls_config;
+ extern bool tls_init(tls_config_t *from_config);
++extern bool tls_reload(tls_config_t *config);
+ extern void tls_cleanup(void);
+ 
+ #endif /* USE_TLS */
+diff --git a/src/libntirpc/src/libntirpc.map.in.cmake b/src/libntirpc/src/libntirpc.map.in.cmake
+index ca41784..f2beb71 100644
+--- a/src/libntirpc/src/libntirpc.map.in.cmake
++++ b/src/libntirpc/src/libntirpc.map.in.cmake
+@@ -180,6 +180,7 @@ NTIRPC_${NTIRPC_VERSION_BASE} {
+     tirpc_control;
+     tls_cleanup;
+     tls_init;
++    tls_reload;
+ 
+     # u*
+     uaddr2taddr;
+diff --git a/src/libntirpc/src/tls_init.c b/src/libntirpc/src/tls_init.c
+index 32c7058..7040061 100644
+--- a/src/libntirpc/src/tls_init.c
++++ b/src/libntirpc/src/tls_init.c
+@@ -31,6 +31,19 @@ bool tls_init(tls_config_t *from_config)
+ 	return true;
+ }
+ 
++/* EZGH: load a reread TLS configuration's credential for new connections */
++bool tls_reload(tls_config_t *config)
++{
++	if (!config->enabled ||
++	    !xprt_tls_reload(config->cert_file, config->key_file,
++			     config->ca_file, config->ciphers,
++			     config->min_version, config->ktls, config->debug)) {
++		LogCritTLS(TLS_INIT, "Failed to reload TLS");
++		return false;
++	}
++	return true;
++}
++
+ /* Cleanup ntiprc TLS config*/
+ void tls_cleanup(void)
+ {
+diff --git a/src/libntirpc/src/tls_openssl.c b/src/libntirpc/src/tls_openssl.c
+index 1d0d862..2800473 100644
+--- a/src/libntirpc/src/tls_openssl.c
++++ b/src/libntirpc/src/tls_openssl.c
+@@ -196,7 +196,9 @@ tls_cred_t *tls_cred_init(const char *cert_file, const char *key_file,
+ 
+ 	/* Set up an ex_data index for associating
+ 	 * tls_ctx_t with SSL objects */
+-	ssl_ctx_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
++	if (ssl_ctx_index == -1)
++		ssl_ctx_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL,
++							 NULL);
+ 	if (ssl_ctx_index == -1) {
+ 		LogCritTLS(TLS_INIT, "Failed to get SSL ex_data index");
+ 		goto cleanup_global;
+diff --git a/src/libntirpc/src/tls_transport.c b/src/libntirpc/src/tls_transport.c
+index d1df005..ce0cbb5 100644
+--- a/src/libntirpc/src/tls_transport.c
++++ b/src/libntirpc/src/tls_transport.c
+@@ -41,6 +41,8 @@
+ 
+ tls_cred_t *g_xprt_cred;
+ bool g_tls_enabled;
++/* EZGH: guards g_xprt_cred against xprt_tls_reload() swapping it */
++static pthread_rwlock_t g_xprt_cred_lock = PTHREAD_RWLOCK_INITIALIZER;
+ 
+ bool xprt_tls_init(const char *cert_file, const char *key_file,
+ 		   const char *ca_file, const char *ciphers,
+@@ -56,6 +58,35 @@ bool xprt_tls_init(const char *cert_file, const char *key_file,
+ 	}
+ }
+ 
++/*
++ * EZGH: build a new server credential and swap it in for new connections.
++ * Sessions made from the old one keep it: SSL_new() took a reference that
++ * SSL_free() drops. On failure the current credential stays.
++ */
++bool xprt_tls_reload(const char *cert_file, const char *key_file,
++		     const char *ca_file, const char *ciphers,
++		     const char *min_version, bool ktls, bool debug)
++{
++#ifdef USE_OPENSSL
++	tls_cred_t *cred, *old;
++
++	if (!g_tls_enabled)
++		return false;
++	cred = tls_cred_init(cert_file, key_file, ca_file, ciphers,
++			     min_version, ktls, debug);
++	if (!cred)
++		return false;
++	pthread_rwlock_wrlock(&g_xprt_cred_lock);
++	old = g_xprt_cred;
++	g_xprt_cred = cred;
++	pthread_rwlock_unlock(&g_xprt_cred_lock);
++	SSL_CTX_free(old);
++	return true;
++#else
++	return false;
++#endif
++}
++
+ /* Initialize TLS for a transport */
+ bool xp_tls_init_impl(SVCXPRT *xprt)
+ {
+@@ -88,8 +119,10 @@ bool xp_tls_init_impl(SVCXPRT *xprt)
+ 	pthread_mutex_lock(&(xprt->xp_tls.tls_lock));
+ 	/* Create TLS context if not already created */
+ 	if (!xprt->xp_tls.tls_ctx) {
++		pthread_rwlock_rdlock(&g_xprt_cred_lock);
+ 		xprt->xp_tls.tls_ctx =
+ 			tls_ctx_init(xprt->xp_fd, g_xprt_cred, true);
++		pthread_rwlock_unlock(&g_xprt_cred_lock);
+ 		if (!xprt->xp_tls.tls_ctx) {
+ 			LogCritTLS(TLS_HANDSHAKE,
+ 				   "Failed to initialize TLS context for fd %"
+diff --git a/src/libntirpc/src/tls_transport.h b/src/libntirpc/src/tls_transport.h
+index e95e676..0c378be 100644
+--- a/src/libntirpc/src/tls_transport.h
++++ b/src/libntirpc/src/tls_transport.h
+@@ -19,4 +19,7 @@ extern bool xprt_tls_init(const char *cert_file, const char *key_file,
+ 		const char *ca_file, const char *ciphers,
+ 		const char *min_version, bool ktls, bool debug);
+ extern bool svc_tls_init_xprt(SVCXPRT *xprt);
++extern bool xprt_tls_reload(const char *cert_file, const char *key_file,
++		const char *ca_file, const char *ciphers,
++		const char *min_version, bool ktls, bool debug);
+ #endif /*  USE_TLS */
