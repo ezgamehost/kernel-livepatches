@@ -1,17 +1,21 @@
 From: Matthew Zhao <matthewzhaocc@gmail.com>
-Date: Wed, 4 Nov 2026 23:30:00 +0000
+Date: Thu, 5 Nov 2026 00:30:00 +0000
 Subject: [PATCH] grace: shorter grace-db notifies, lift as soon as reclaim is
  complete
 
-- rados_grace_notify() waits 500 ms for acks, not 3 s. Nothing reads the
+- rados_grace_notify() waits 1 s for acks, not 3 s. Nothing reads the
   acks: watchers reread the grace database when notified and every
   node's reaper rereads it anyway, but a dead node's watch lingers until
   it times out (30 s), and each notify meanwhile stalled its caller for
-  the full timeout.
+  the full timeout. Not less than 1 s: librados (IoCtxImpl::notify, 20.2.4)
+  sends timeout_ms / 1000 seconds, and the OSD takes 0 as unset, i.e.
+  osd_default_notify_timeout (30 s).
 - When a RECLAIM_COMPLETE brings the count to the number of clients the
   grace period waits for, wake the reaper, so grace is lifted (and, for
   rados_cluster, this node's NEED cleared) now rather than at the
-  reaper's next tick, up to half a lease later.
+  reaper's next tick, up to half a lease later. The count is read without
+  grace_mutex (the reaper holds it across RADOS calls): the wake is a hint
+  and the reaper rechecks under the lock.
 
 ---
 diff --git a/src/Protocols/NFS/nfs4_op_reclaim_complete.c b/src/Protocols/NFS/nfs4_op_reclaim_complete.c
@@ -29,10 +33,10 @@ index f77946d..60f8941 100644
  	}
  
 diff --git a/src/SAL/nfs4_recovery.c b/src/SAL/nfs4_recovery.c
-index 4183805..ff89903 100644
+index 4183805..54efb41 100644
 --- a/src/SAL/nfs4_recovery.c
 +++ b/src/SAL/nfs4_recovery.c
-@@ -940,6 +940,22 @@ int nfs_recovery_fsal_reclaim_client(char *nodeid)
+@@ -940,6 +940,20 @@ int nfs_recovery_fsal_reclaim_client(char *nodeid)
  	return 0;
  }
  
@@ -43,12 +47,10 @@ index 4183805..ff89903 100644
 + */
 +void nfs_reclaim_complete_wake(int32_t rc_count)
 +{
-+	bool all;
-+
-+	PTHREAD_MUTEX_lock(&grace_mutex);
-+	all = rc_count >= clid_count;
-+	PTHREAD_MUTEX_unlock(&grace_mutex);
-+	if (all)
++	/* A hint, so no grace_mutex (the reaper holds it across RADOS calls):
++	 * the reaper rechecks the counts under it.
++	 */
++	if (rc_count >= __atomic_load_n(&clid_count, __ATOMIC_RELAXED))
 +		reaper_wake();
 +}
 +
@@ -68,18 +70,20 @@ index 0e7ef59..3220489 100644
  void nfs_end_grace(void);
  bool nfs_in_grace(void);
 diff --git a/src/support/rados_grace.c b/src/support/rados_grace.c
-index 843b12f..2f204d7 100644
+index 843b12f..978fc45 100644
 --- a/src/support/rados_grace.c
 +++ b/src/support/rados_grace.c
-@@ -48,7 +48,10 @@ static void rados_grace_notify(rados_ioctx_t io_ctx, const char *oid)
+@@ -48,7 +48,12 @@ static void rados_grace_notify(rados_ioctx_t io_ctx, const char *oid)
  	static size_t len;
  
  	/* FIXME: we don't really want or need this to be synchronous */
 -	rados_notify2(io_ctx, oid, "", 0, 3000, &buf, &len);
-+	/* EZGH: 500 ms, not 3 s: notifies are advisory (every node rereads the
++	/* EZGH: 1 s, not 3 s: notifies are advisory (every node rereads the
 +	 * database from its reaper), and a dead node's watch lingers 30 s.
++	 * Not less: librados sends timeout_ms / 1000 seconds, and the OSD takes
++	 * 0 as unset, i.e. osd_default_notify_timeout (30 s).
 +	 */
-+	rados_notify2(io_ctx, oid, "", 0, 500, &buf, &len);
++	rados_notify2(io_ctx, oid, "", 0, 1000, &buf, &len);
  	rados_buffer_free(buf);
  }
  

@@ -5,7 +5,9 @@
 # addresses (ganesha/patches/0002) before it touches the grace database, and exits when it
 # can't. ganesha.nfsd runs against a stub librados.so.2 (LD_LIBRARY_PATH, ahead of the
 # modules' RUNPATH): every librados function the RADOS modules use returns 0, except that
-# rados_create/rados_getaddrs give each client the address [v2:127.0.0.1:0/<userid>],
+# rados_create/rados_getaddrs give each client the address [v2:127.0.0.1:0/<userid>] (as
+# librados does: 0, and a string to free with rados_buffer_free; with STUB_ADDRS_NULL=<userid>,
+# 0 and no string for that client),
 # rados_write_full records what it's given (or fails with -EIO when STUB_WRITE_FAIL is set),
 # and rados_read_op_operate fails with -EIO, so the grace-database membership check fails
 # and Ganesha stops there.
@@ -34,6 +36,12 @@ int rados_create(void **c, const char *id)
 }
 int rados_getaddrs(void *c, char **addrs)
 {
+	const char *null = getenv("STUB_ADDRS_NULL");
+
+	if (null && !strcmp(null, ((struct client *)c)->id)) {
+		*addrs = NULL;
+		return 0;
+	}
 	return asprintf(addrs, "[v2:127.0.0.1:0/%s]", ((struct client *)c)->id) < 0 ? -ENOMEM : 0;
 }
 void rados_buffer_free(char *b) { free(b); }
@@ -90,18 +98,28 @@ run() { # run <name> [env...]: ganesha.nfsd on the stub until it stops; status i
 line() { grep -n "$2" "$T/$1.log" | head -1 | cut -d: -f1; }
 
 run write
-want='pool=files-check ns=ns-check oid=addrs.rank-1
+pid=$(sed -n 's/.* ganesha\.nfsd-\([0-9]*\)\[main\] .*/\1/p' "$T/write.log" | head -1)
+want="pool=files-check ns=ns-check oid=addrs.rank-1
+host $(hostname)
+pid $pid
 recov [v2:127.0.0.1:0/check-recov]
-urls [v2:127.0.0.1:0/check-urls]'
+urls [v2:127.0.0.1:0/check-urls]"
 [ "$(cat "$T/write.obj" 2>/dev/null)" = "$want" ] \
 	|| { cat "$T/write.log" >&2; printf 'got:\n%s\n' "$(cat "$T/write.obj" 2>/dev/null)" >&2; die "addrs.rank-1 is not as expected"; }
-w=$(line write 'Wrote addrs.rank-1: recov')
+[ -z "$(tail -c1 "$T/write.obj" | tr -d '\n')" ] || die "addrs.rank-1 does not end in a newline"
+w=$(line write 'Wrote addrs.rank-1: host ')
 m=$(line write 'Cluster membership check failed')
 [ -n "$w" ] && [ -n "$m" ] && [ "$w" -lt "$m" ] || { cat "$T/write.log" >&2; die "write: addrs.rank-1 not written before the grace database"; }
-echo "rados_cluster: addrs.rank-1 written (grace pool and namespace, recov and urls lines) before the grace database"
+echo "rados_cluster: addrs.rank-1 written (grace pool and namespace; host, pid, recov and urls lines) before the grace database"
 
 run fail STUB_WRITE_FAIL=1
 grep -q 'Failed to write addrs.rank-1: -5' "$T/fail.log" || { cat "$T/fail.log" >&2; die "fail: no 'Failed to write addrs.rank-1'"; }
 ! grep -q 'Cluster membership' "$T/fail.log" || { cat "$T/fail.log" >&2; die "fail: went on to the grace database"; }
 echo "rados_cluster: addrs.rank-1 write fails -> ganesha.nfsd exits ($(cat "$T/fail.rc")) before the grace database"
+for c in check-recov check-urls; do
+	run "null-$c" STUB_ADDRS_NULL="$c"
+	grep -q 'Failed to write addrs.rank-1: -61' "$T/null-$c.log" || { cat "$T/null-$c.log" >&2; die "null-$c: no 'Failed to write addrs.rank-1: -61'"; }
+	[ ! -e "$T/null-$c.obj" ] || die "null-$c: addrs.rank-1 was written"
+	echo "rados_cluster: no address for $c -> ganesha.nfsd exits ($(cat "$T/null-$c.rc")), nothing written"
+done
 echo OK

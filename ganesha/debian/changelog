@@ -1,3 +1,16 @@
+nfs-ganesha (15.10-1+ezgh5) resolute; urgency=medium
+
+  * d/p/0002: addrs.<nodeid> starts with "host <hostname>" and "pid <pid>"
+    lines, so a fencer can tell this instance from a replacement; no address
+    from rados_getaddrs() fails startup instead of writing "(null)"; once it
+    is published the RADOS URLs module creates no new client (a reread that
+    needs one is refused) and keeps the one it has on a failed ioctx create.
+  * d/p/0003: grace-db notifies wait 1 s, not 500 ms, which librados rounds
+    to 0 s and the OSD then treats as its 30 s default; the RECLAIM_COMPLETE
+    path reads the client count without the grace lock.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Thu, 05 Nov 2026 00:30:00 +0000
+
 nfs-ganesha (15.10-1+ezgh4) resolute; urgency=medium
 
   * d/p/0002-rados_cluster-publish-this-instance-s-RADOS-client-addresses.patch:
