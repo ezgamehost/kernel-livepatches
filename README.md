@@ -260,7 +260,7 @@ A running VM keeps the QEMU it started with until it restarts or migrates.
 ## NFS-Ganesha
 
 The same apt repository carries upstream NFS-Ganesha V15.10 for EZGH Files gateway hosts,
-as `15.10-1+ezgh3`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
+as `15.10-1+ezgh4`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
 names (and `/usr/bin/ganesha.nfsd`) of Ubuntu's packages. Ubuntu 26.04's `6.5-8` has
 neither RPC-with-TLS nor per-export QoS, and it is built against Ubuntu's Ceph 20.2.0
 libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build has:
@@ -270,7 +270,8 @@ libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build
   configuration (`%url`, `RADOS_URLS`) and `ganesha-rados-grace`; NFSv4 only (no NFSv3,
   NLM, RQUOTA or 9P), no other FSAL, no admin tools. The cmake flags are files-stack's
   `deploy/proofs/image-upstream`, the build Files' proofs tested.
-- One patch, [`ganesha/patches`](ganesha/patches) (applied by `build.sh` with quilt):
+- Three patches, [`ganesha/patches`](ganesha/patches) (applied by `build.sh` with quilt).
+  TLS (0001):
   `ganesha.nfsd` exits at startup when `TLS_CONFIG` enables TLS and its certificate or key
   doesn't load (V15.10 logs it and serves without TLS). A CA file that doesn't load
   (`TLS_CA_File` unset and nothing at the default `/etc/ganesha/tls/ca.crt`) isn't fatal:
@@ -282,6 +283,14 @@ libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build
   they started with, and one that fails to load leaves the current certificate in place,
   with an error logged once. Turning TLS on or off takes a restart. V15.10 reads
   `TLS_CONFIG` only at startup.
+- Fencing (0002): the `rados_cluster` recovery backend writes `addrs.<nodeid>` (WriteFull,
+  in `RADOS_KV`'s pool and namespace, the grace database's) right after its RADOS client
+  connects and before it touches the grace database: one `<role> <addr>` line per RADOS
+  client, `recov` and, with RADOS URLs, `urls`, each address as `rados_getaddrs()` returns
+  it, so whoever takes the node over can blocklist them. If the write fails, `ganesha.nfsd`
+  exits. Failover (0003): grace-database notifies wait 500 ms for acks instead of 3 s (a dead
+  node's watch lingers 30 s; nothing reads the acks), and the last expected
+  `RECLAIM_COMPLETE` wakes the reaper, so grace lifts then rather than at its next tick.
 - Upstream Ceph `20.2.4-1noble` client libraries from `download.ceph.com/debian-20.2.4`
   (checked against [`ganesha/ceph-release.asc`](ganesha/ceph-release.asc), fingerprint
   `08B7 3419 AC32 B4E9 66C1  A330 E84A C2C0 460F 3994`), the repository the hosts' OS
@@ -327,7 +336,10 @@ swaps in a new certificate still gets a NULL reply afterwards and closes cleanly
 handshakes get the new certificate; a SIGHUP with unchanged files doesn't reload, a broken
 certificate is refused once and the current one kept, turning TLS off is refused once; and
 20 more reloads leave it serving the last certificate and exiting cleanly. Run it on a host after an upgrade; the build runs it before anything is
-published and publishes its output as `ganesha-check.txt`.
+published and publishes its output as `ganesha-check.txt`, with that of
+[`ganesha/addrs-check.sh`](ganesha/addrs-check.sh): a `rados_cluster` `ganesha.nfsd` on a
+stub `librados` (built with `cc` there) must write `addrs.<nodeid>` with its `recov` and
+`urls` lines before its grace-database membership check, and exit when the write fails.
 [`ganesha/gateway-check.sh`](ganesha/gateway-check.sh) installs what a gateway host gets
 (the Ubuntu snapshot's resolute and noble `universe`, this repository, download.ceph.com,
 the exact versions)
@@ -335,7 +347,7 @@ from the published repositories and runs `check.sh` on it; the publish CI runs i
 publishing.
 
 `OUT=out ganesha/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
-takes minutes, and publishes from a `ganesha-v15.10-1+ezgh3` tag. arm64 builds too, as a
+takes minutes, and publishes from a `ganesha-v15.10-1+ezgh4` tag. arm64 builds too, as a
 smoke of the packaging, with `snapshot-apt.sh` pointed at `ports.ubuntu.com` (the snapshot
 has no arm64); only amd64 is published. The release files hold the source package
 (`.dsc`, `.orig.tar.xz`, `.debian.tar.xz`).

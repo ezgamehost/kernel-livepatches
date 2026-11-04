@@ -1,0 +1,85 @@
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Wed, 4 Nov 2026 23:30:00 +0000
+Subject: [PATCH] grace: shorter grace-db notifies, lift as soon as reclaim is
+ complete
+
+- rados_grace_notify() waits 500 ms for acks, not 3 s. Nothing reads the
+  acks: watchers reread the grace database when notified and every
+  node's reaper rereads it anyway, but a dead node's watch lingers until
+  it times out (30 s), and each notify meanwhile stalled its caller for
+  the full timeout.
+- When a RECLAIM_COMPLETE brings the count to the number of clients the
+  grace period waits for, wake the reaper, so grace is lifted (and, for
+  rados_cluster, this node's NEED cleared) now rather than at the
+  reaper's next tick, up to half a lease later.
+
+---
+diff --git a/src/Protocols/NFS/nfs4_op_reclaim_complete.c b/src/Protocols/NFS/nfs4_op_reclaim_complete.c
+index f77946d..60f8941 100644
+--- a/src/Protocols/NFS/nfs4_op_reclaim_complete.c
++++ b/src/Protocols/NFS/nfs4_op_reclaim_complete.c
+@@ -100,7 +100,8 @@ enum nfs_req_result nfs4_op_reclaim_complete(struct nfs_argop4 *op,
+ 	if (!arg_RECLAIM_COMPLETE4->rca_one_fs) {
+ 		clientid->cid_cb.v41.cid_reclaim_complete = true;
+ 		if (clientid->cid_allow_reclaim)
+-			atomic_inc_int32_t(&reclaim_completes);
++			nfs_reclaim_complete_wake(
++				atomic_inc_int32_t(&reclaim_completes));
+ 		nfs41_reclaim_complete_clid(clientid);
+ 	}
+ 
+diff --git a/src/SAL/nfs4_recovery.c b/src/SAL/nfs4_recovery.c
+index 4183805..ff89903 100644
+--- a/src/SAL/nfs4_recovery.c
++++ b/src/SAL/nfs4_recovery.c
+@@ -940,6 +940,22 @@ int nfs_recovery_fsal_reclaim_client(char *nodeid)
+ 	return 0;
+ }
+ 
++/*
++ * EZGH: once every client the grace period waits for has sent
++ * RECLAIM_COMPLETE, wake the reaper to lift grace now rather than at its next
++ * tick (lease/2).
++ */
++void nfs_reclaim_complete_wake(int32_t rc_count)
++{
++	bool all;
++
++	PTHREAD_MUTEX_lock(&grace_mutex);
++	all = rc_count >= clid_count;
++	PTHREAD_MUTEX_unlock(&grace_mutex);
++	if (all)
++		reaper_wake();
++}
++
+ void nfs_try_lift_grace(void)
+ {
+ 	bool in_grace = true;
+diff --git a/src/include/sal_functions.h b/src/include/sal_functions.h
+index 0e7ef59..3220489 100644
+--- a/src/include/sal_functions.h
++++ b/src/include/sal_functions.h
+@@ -1063,6 +1063,7 @@ void blocked_lock_polling(struct fridgethr_context *ctx);
+ 
+ /* Grace period handling */
+ extern int32_t reclaim_completes; /* atomic */
++void nfs_reclaim_complete_wake(int32_t rc_count);
+ int nfs_start_grace(nfs_grace_start_t *gsp);
+ void nfs_end_grace(void);
+ bool nfs_in_grace(void);
+diff --git a/src/support/rados_grace.c b/src/support/rados_grace.c
+index 843b12f..2f204d7 100644
+--- a/src/support/rados_grace.c
++++ b/src/support/rados_grace.c
+@@ -48,7 +48,10 @@ static void rados_grace_notify(rados_ioctx_t io_ctx, const char *oid)
+ 	static size_t len;
+ 
+ 	/* FIXME: we don't really want or need this to be synchronous */
+-	rados_notify2(io_ctx, oid, "", 0, 3000, &buf, &len);
++	/* EZGH: 500 ms, not 3 s: notifies are advisory (every node rereads the
++	 * database from its reaper), and a dead node's watch lingers 30 s.
++	 */
++	rados_notify2(io_ctx, oid, "", 0, 500, &buf, &len);
+ 	rados_buffer_free(buf);
+ }
+ 

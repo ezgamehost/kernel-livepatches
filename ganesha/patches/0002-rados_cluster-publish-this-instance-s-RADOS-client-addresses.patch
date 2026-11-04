@@ -1,0 +1,204 @@
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Wed, 4 Nov 2026 23:30:00 +0000
+Subject: [PATCH] rados_cluster: publish this instance's RADOS client addresses
+
+A node that takes over a rados_cluster node's recovery identity can fence
+the old instance's CephFS sessions, but not its RADOS clients: a frozen
+and resumed instance can still rewrite its recovery object and clear its
+NEED flag in the grace database, ending grace while the new instance's
+clients reclaim.
+
+Right after the recovery backend's RADOS client connects, and before it
+checks membership of or joins the grace database, write
+addrs.<nodeid> (WriteFull, in RADOS_KV's pool and namespace, the grace
+database's) with one "<role> <addr>" line per RADOS client this process
+has: "recov" (the recovery backend's) and, when RADOS URLs are in use,
+"urls" (their client, connected while the configuration is read), each
+address exactly as rados_getaddrs() returns it. If the write fails,
+recovery backend initialization fails, so ganesha.nfsd exits. The
+object is rewritten on every start.
+
+---
+diff --git a/src/MainNFSD/libganesha_nfsd.ver b/src/MainNFSD/libganesha_nfsd.ver
+index 06e8776..96fed41 100644
+--- a/src/MainNFSD/libganesha_nfsd.ver
++++ b/src/MainNFSD/libganesha_nfsd.ver
+@@ -35,6 +35,7 @@
+   config_GetBlockNode;
+   config_ParseFile;
+   config_url_init;
++  gsh_rados_url_getaddrs;
+   connection_manager__callback_set;
+   connection_manager__callback_clear;
+   connection_manager__drain_and_disconnect_local;
+diff --git a/src/SAL/recovery/recovery_rados.h b/src/SAL/recovery/recovery_rados.h
+index 2b85a9a..ce9e6d1 100644
+--- a/src/SAL/recovery/recovery_rados.h
++++ b/src/SAL/recovery/recovery_rados.h
+@@ -66,6 +66,7 @@ typedef void (*pop_clid_entry_t)(char *, char *, size_t, struct pop_args *);
+ int rados_kv_connect(rados_ioctx_t *io_ctx, const char *userid,
+ 		     const char *conf, const char *pool, const char *ns);
+ void rados_kv_shutdown(void);
++int rados_kv_getaddrs(char **addrs);
+ int rados_kv_put(char *key, char *val, char *object);
+ int rados_kv_get(char *key, char *val, char *object);
+ void rados_kv_add_clid(nfs_client_id_t *clientid);
+diff --git a/src/SAL/recovery/recovery_rados_cluster.c b/src/SAL/recovery/recovery_rados_cluster.c
+index 6024dda..f4976b0 100644
+--- a/src/SAL/recovery/recovery_rados_cluster.c
++++ b/src/SAL/recovery/recovery_rados_cluster.c
+@@ -34,6 +34,7 @@
+ #include "nfs_core.h"
+ #include "sal_functions.h"
+ #include "recovery_rados.h"
++#include "conf_url.h"
+ 
+ static bool takeover;
+ /* recovery rados object names for takeover */
+@@ -89,6 +90,44 @@ static int ip_str_to_int(char *ip_str)
+ 	return addr;
+ }
+ 
++/*
++ * EZGH: publish this instance's RADOS client addresses as addrs.<nodeid> in
++ * the grace database's pool and namespace, one "<role> <addr>" line per
++ * client (recov, then urls when there is one), before it joins the grace
++ * database, so whoever takes over the node can blocklist them.
++ */
++static int rados_cluster_publish_addrs(void)
++{
++	char *oid = NULL, *recov = NULL, *urls = NULL, *buf = NULL;
++	int ret, len;
++
++	if (asprintf(&oid, "addrs.%s", nodeid) < 0)
++		return -ENOMEM;
++	ret = rados_kv_getaddrs(&recov);
++	if (ret == 0)
++		ret = gsh_rados_url_getaddrs(&urls);
++	if (ret == 0) {
++		len = asprintf(&buf, "recov %s\n%s%s%s", recov,
++			       urls ? "urls " : "", urls ? urls : "",
++			       urls ? "\n" : "");
++		ret = len < 0 ? -ENOMEM
++			      : rados_write_full(rados_recov_io_ctx, oid, buf,
++						 len);
++	}
++	if (ret < 0)
++		LogCrit(COMPONENT_RECOVERY, "Failed to write %s: %d", oid, ret);
++	else
++		LogEvent(COMPONENT_RECOVERY, "Wrote %s: recov %s%s%s", oid,
++			 recov, urls ? ", urls " : "", urls ? urls : "");
++	free(buf);
++	if (recov)
++		rados_buffer_free(recov);
++	if (urls)
++		rados_buffer_free(urls);
++	free(oid);
++	return ret;
++}
++
+ static int rados_cluster_init(void)
+ {
+ 	int ret;
+@@ -125,6 +164,10 @@ static int rados_cluster_init(void)
+ 		goto out_shutdown;
+ 	}
+ 
++	ret = rados_cluster_publish_addrs();
++	if (ret < 0)
++		goto out_shutdown;
++
+ 	ret = rados_grace_member(rados_recov_io_ctx, rados_kv_param.grace_oid,
+ 				 nodeid);
+ 	if (ret < 0) {
+diff --git a/src/SAL/recovery/recovery_rados_kv.c b/src/SAL/recovery/recovery_rados_kv.c
+index 5552191..5fefcf0 100644
+--- a/src/SAL/recovery/recovery_rados_kv.c
++++ b/src/SAL/recovery/recovery_rados_kv.c
+@@ -280,6 +280,13 @@ int rados_kv_connect(rados_ioctx_t *io_ctx, const char *userid,
+ 	return ret;
+ }
+ 
++/* EZGH: the recovery client's address (rados_getaddrs()) */
++int rados_kv_getaddrs(char **addrs)
++{
++	*addrs = NULL;
++	return clnt ? rados_getaddrs(clnt, addrs) : -ENOTCONN;
++}
++
+ void rados_kv_shutdown(void)
+ {
+ 	struct gsh_refstr *recov_oid;
+diff --git a/src/config_parsing/conf_url.c b/src/config_parsing/conf_url.c
+index e6e89de..7f582f7 100644
+--- a/src/config_parsing/conf_url.c
++++ b/src/config_parsing/conf_url.c
+@@ -94,6 +94,7 @@ static struct {
+ 	void (*pkginit)(void);
+ 	int (*setup_watch)(void);
+ 	void (*shutdown_watch)(void);
++	int (*getaddrs)(char **addrs);
+ } rados_urls = {
+ 	NULL,
+ };
+@@ -109,6 +110,8 @@ static void load_rados_config(void)
+ 			dlsym(rados_urls.dl, "rados_url_setup_watch");
+ 		rados_urls.shutdown_watch =
+ 			dlsym(rados_urls.dl, "rados_url_shutdown_watch");
++		rados_urls.getaddrs =
++			dlsym(rados_urls.dl, "rados_url_getaddrs");
+ 
+ 		if (!rados_urls.pkginit || !rados_urls.setup_watch ||
+ 		    !rados_urls.shutdown_watch) {
+@@ -257,6 +260,17 @@ int gsh_rados_url_setup_watch(void)
+ #endif
+ }
+ 
++/* EZGH: the RADOS URLs client's address, or NULL when there is none */
++int gsh_rados_url_getaddrs(char **addrs)
++{
++	*addrs = NULL;
++#ifdef RADOS_URLS
++	if (rados_urls.getaddrs)
++		return rados_urls.getaddrs(addrs);
++#endif
++	return 0;
++}
++
+ void gsh_rados_url_shutdown_watch(void)
+ {
+ #ifdef RADOS_URLS
+diff --git a/src/config_parsing/conf_url_rados.c b/src/config_parsing/conf_url_rados.c
+index 4c75448..1743429 100644
+--- a/src/config_parsing/conf_url_rados.c
++++ b/src/config_parsing/conf_url_rados.c
+@@ -566,6 +566,17 @@ out:
+ 	return ret;
+ }
+ 
++/* EZGH: this module's RADOS client address (rados_getaddrs()), or NULL when
++ * it has no client. Free with rados_buffer_free().
++ */
++int rados_url_getaddrs(char **addrs)
++{
++	*addrs = NULL;
++	if (!initialized)
++		return 0;
++	return rados_getaddrs(cluster, addrs);
++}
++
+ void rados_url_shutdown_watch(void)
+ {
+ 	int ret;
+diff --git a/src/include/conf_url.h b/src/include/conf_url.h
+index 1f74b70..de7ae4b 100644
+--- a/src/include/conf_url.h
++++ b/src/include/conf_url.h
+@@ -47,6 +47,7 @@ void config_url_release(FILE *f, char *fbuf);
+ 
+ int gsh_rados_url_setup_watch(void);
+ void gsh_rados_url_shutdown_watch(void);
++int gsh_rados_url_getaddrs(char **addrs);
+ 
+ struct plugin_module {
+ 	struct glist_head link;

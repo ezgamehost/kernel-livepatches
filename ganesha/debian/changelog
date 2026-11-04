@@ -1,3 +1,16 @@
+nfs-ganesha (15.10-1+ezgh4) resolute; urgency=medium
+
+  * d/p/0002-rados_cluster-publish-this-instance-s-RADOS-client-addresses.patch:
+    the rados_cluster recovery backend writes addrs.<nodeid> ("recov <addr>"
+    and, with RADOS URLs, "urls <addr>", from rados_getaddrs()) in the grace
+    database's pool and namespace before it touches the grace database, and
+    ganesha.nfsd exits if it can't, so a takeover can blocklist them.
+  * d/p/0003-grace-shorter-grace-db-notifies-lift-as-soon-as-reclaim-is-complete.patch:
+    grace-database notifies wait 500 ms for acks, not 3 s; the reaper is woken
+    when the last expected client sends RECLAIM_COMPLETE.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Wed, 04 Nov 2026 23:30:00 +0000
+
 nfs-ganesha (15.10-1+ezgh3) resolute; urgency=medium
 
   * d/p/0001-tls-fail-startup-on-a-bad-certificate-and-reload-it-on-SIGHUP.patch:

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 UPSTREAM=15.10
-DEB_VER=15.10-1+ezgh3 # the tag is ganesha-v$DEB_VER
+DEB_VER=15.10-1+ezgh4 # the tag is ganesha-v$DEB_VER
 GANESHA_COMMIT=38f542cd5ef861add07bcf75c3d0496a332d5018 # tag V15.10 (signed by Frank S. Filz)
 # Ceph client libraries: download.ceph.com's noble build, the one the hosts' OS release carries.
 CEPH_VER=20.2.4-1noble
@@ -119,6 +119,7 @@ for pkg in "${PKGS[@]}"; do
 	[ "$(dpkg-query -W -f='${Version}' "$pkg")" = "$DEB_VER" ] || die "$pkg $DEB_VER is not installed"
 done
 "$REPO/ganesha/check.sh" | tee check.txt
+"$REPO/ganesha/addrs-check.sh" | tee -a check.txt
 
 rm -f "$OUT"/*.deb
 cp "${debs[@]}" "libicu74_${ICU_VER}_$ARCH.deb" "$OUT/"
