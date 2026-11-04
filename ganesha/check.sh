@@ -134,44 +134,109 @@ rc=$(cat "$T/nocert.rc")
 [ "$rc" != 0 ] && [ "$rc" != 124 ] || { cat "$T/nocert.log" >&2; die "nocert: exit status $rc, not a startup failure"; }
 echo "TLS with a missing certificate: ganesha.nfsd exits ($rc) at startup"
 
-# A server on 127.0.0.1:$PORT with certificate a; then b and a broken one, each by SIGHUP.
+# No CA: only client certificates need one, and none is required, so Ganesha must start with
+# just the certificate and key (it reads the CA from /etc/ganesha/tls/ca.crt when the block
+# names none, which nothing installs).
+noca_file=; [ ! -e /etc/ganesha/tls/ca.crt ] || noca_file="TLS_CA_File = \"$T/missing-ca.pem\";"
+run noca "TLS_CONFIG { Enable_TLS = true; TLS_Cert_File = \"$T/cert.pem\"; TLS_Key_File = \"$T/key.pem\"; $noca_file }
+$stop"
+expect noca 'Error while parsing NFSv4 specific configuration'
+expect noca 'client certificates are not requested'
+reject noca 'TLS failed to initialize'
+echo "TLS with no CA file: starts with the certificate and key, requests no client certificate"
+
+# A server on 127.0.0.1:$PORT with certificate a (and a as the CA). Clients present no
+# certificate, as Linux's tlshd doesn't by default.
 cat > "$T/serve.conf" <<X
 $core
 NFSv4 { RecoveryBackend = fs_ng; RecoveryRoot = "$T/recovery"; }
 $tls
 X
+cp "$T/serve.conf" "$T/serve.conf.tls"
 "$nfsd" -F -L "$T/serve.log" -N NIV_EVENT -f "$T/serve.conf" -p "$T/serve.pid" > "$T/serve.out" 2>&1 &
 srv=$!
+count() { grep -c "$1" "$T/serve.log" 2>/dev/null || :; }
 wait_log() { # wait_log <count> <message>: the server's log holds <message> <count> times (60 s)
 	local i n
 	for i in $(seq 60); do
-		n=$(grep -c "$2" "$T/serve.log" 2>/dev/null || :)
+		n=$(count "$2")
 		[ "${n:-0}" -ge "$1" ] && return 0
 		kill -0 "$srv" 2>/dev/null || { cat "$T/serve.log" >&2; die "the server exited"; }
 		sleep 1
 	done
-	cat "$T/serve.log" >&2; die "serve: no '$2' after 60 s"
+	cat "$T/serve.log" >&2; die "serve: no '$2' $1 times after 60 s"
 }
 served() { # served: the SHA-256 fingerprint of the certificate a new TLS handshake gets
 	timeout 20 openssl s_client -connect "127.0.0.1:$PORT" </dev/null 2>/dev/null \
 		| openssl x509 -noout -fingerprint -sha256
 }
-fp() { openssl x509 -noout -fingerprint -sha256 -in "$T/$1.crt"; }
+fp() { openssl x509 -noout -fingerprint -sha256 -in "$1"; }
+# An NFS NULL call (xid 12345678, AUTH_NONE) as one RPC record, and its reply (accepted, success).
+rpc_null() { printf '\x80\x00\x00\x28\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01\x86\xa3\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'; }
+replied() { od -An -tx1 -v "$1" | tr -d ' \n' | grep -q 80000018123456780000000100000000000000000000000000000000; }
+null_rpc() { # null_rpc <name>: a new TLS session, no client certificate, gets a NULL reply
+	{ rpc_null; sleep 2; } | timeout 20 openssl s_client -connect "127.0.0.1:$PORT" > "$T/$1.out" 2>&1 || true
+	replied "$T/$1.out" || { cat "$T/$1.out" >&2; die "$1: no NFS NULL reply over TLS"; }
+}
+hup() { # hup <cert>: install certificate <cert> (a or b) and its key, SIGHUP, wait for the reload
+	local n
+	n=$(count 'TLS_CONFIG reloaded')
+	cp "$T/$1.key" "$T/key.pem"
+	cp "$T/$1.crt" "$T/cert.pem"
+	kill -HUP "$srv"
+	wait_log $((n + 1)) 'TLS_CONFIG reloaded'
+}
 wait_log 1 'NFS SERVER INITIALIZED'
-[ "$(served)" = "$(fp a)" ] || die "the server does not serve certificate a"
-echo "TLS handshake on 127.0.0.1:$PORT: certificate a"
-cp "$T/b.key" "$T/key.pem"
-cp "$T/b.crt" "$T/cert.pem"
-kill -HUP "$srv"
-wait_log 1 'TLS_CONFIG reloaded'
-[ "$(served)" = "$(fp b)" ] || die "after SIGHUP, a new handshake does not get certificate b"
+[ "$(served)" = "$(fp "$T/a.crt")" ] || die "the server does not serve certificate a"
+null_rpc fresh-a
+echo "TLS on 127.0.0.1:$PORT with a CA configured: a client without a certificate gets certificate a and an NFS NULL reply"
+
+# A session opened before the reload keeps working on its old context and closes cleanly.
+mkfifo "$T/held.in"
+timeout 120 openssl s_client -connect "127.0.0.1:$PORT" < "$T/held.in" > "$T/held.out" 2>&1 &
+held=$!
+exec 3> "$T/held.in"
+for i in $(seq 20); do grep -q 'BEGIN CERTIFICATE' "$T/held.out" && break; sleep 1; done
+grep -q 'BEGIN CERTIFICATE' "$T/held.out" || { cat "$T/held.out" >&2; die "held: no handshake"; }
+hup b
+[ "$(served)" = "$(fp "$T/b.crt")" ] || die "after SIGHUP, a new handshake does not get certificate b"
 echo "certificate b in place, SIGHUP: a new handshake gets certificate b"
+rpc_null >&3
+for i in $(seq 20); do replied "$T/held.out" && break; sleep 1; done
+replied "$T/held.out" || { cat "$T/held.out" >&2; die "held: no NFS NULL reply on the session opened before the reload"; }
+exec 3>&-
+wait "$held" || die "held: s_client exited $? closing the session"
+[ "$(fp "$T/held.out")" = "$(fp "$T/a.crt")" ] || die "held: the session was not on certificate a"
+echo "a session opened on certificate a before the reload: NFS NULL reply after it, closed cleanly"
+
+# Unchanged files don't reload; a broken certificate is refused once and the current one stays.
+kill -HUP "$srv"
 echo broken > "$T/cert.pem"
 kill -HUP "$srv"
 wait_log 1 'TLS_CONFIG not reloaded'
-[ "$(served)" = "$(fp b)" ] || die "after a SIGHUP with a broken certificate, the server does not keep b"
-echo "broken certificate, SIGHUP: reload refused, new handshakes still get certificate b"
+kill -HUP "$srv"
+hup a
+[ "$(count 'TLS_CONFIG reloaded')" = 2 ] || die "a SIGHUP with unchanged files reloaded"
+[ "$(count 'TLS_CONFIG not reloaded')" = 1 ] || die "unchanged broken files were retried"
+[ "$(served)" = "$(fp "$T/a.crt")" ] || die "after the broken certificate and a again, a new handshake does not get a"
+echo "SIGHUP with unchanged files: no reload; broken certificate: refused once, the current one kept"
+
+# Turning TLS off takes a restart: refused, logged once.
+sed 's/Enable_TLS = true/Enable_TLS = false/' "$T/serve.conf.tls" > "$T/serve.conf"
+kill -HUP "$srv"
+wait_log 1 'which takes a restart'
+kill -HUP "$srv"
+cp "$T/serve.conf.tls" "$T/serve.conf"
+hup b
+[ "$(count 'which takes a restart')" = 1 ] || die "the TLS on/off refusal was logged more than once"
+echo "TLS turned off by SIGHUP: refused (logged once), TLS stays on"
+
+for i in $(seq 20); do hup "$( [ $((i % 2)) = 1 ] && echo a || echo b)"; done
+[ "$(served)" = "$(fp "$T/b.crt")" ] || die "after 20 reloads, a new handshake does not get certificate b"
+null_rpc fresh-b
+echo "20 more reloads: still serving, new handshakes get the last certificate"
 kill "$srv"
 wait "$srv" || true
 srv=
+grep -q 'NFS EXIT: regular exit' "$T/serve.log" || { tail -50 "$T/serve.log" >&2; die "the server did not exit cleanly"; }
 echo OK

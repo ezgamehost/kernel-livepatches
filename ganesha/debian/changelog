@@ -1,3 +1,17 @@
+nfs-ganesha (15.10-1+ezgh3) resolute; urgency=medium
+
+  * d/p/0001-tls-fail-startup-on-a-bad-certificate-and-reload-it-on-SIGHUP.patch:
+    - A CA file that doesn't load (TLS_CA_File unset and nothing at the
+      default /etc/ganesha/tls/ca.crt) no longer stops startup: no client
+      certificate is requested then. Only the certificate and key must load.
+    - SIGHUP rereads TLS_CONFIG before the LOG and EXPORT blocks, so a bad
+      export can't hold back a renewal, and reloads only when the
+      certificate, key or CA file changed; a failed load or a TLS on/off
+      change is logged once.
+    - The credential swap takes a plain mutex instead of a rwlock.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Wed, 04 Nov 2026 22:30:00 +0000
+
 nfs-ganesha (15.10-1+ezgh2) resolute; urgency=medium
 
   * d/p/0001-tls-fail-startup-on-a-bad-certificate-and-reload-it-on-SIGHUP.patch:

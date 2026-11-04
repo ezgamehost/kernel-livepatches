@@ -260,7 +260,7 @@ A running VM keeps the QEMU it started with until it restarts or migrates.
 ## NFS-Ganesha
 
 The same apt repository carries upstream NFS-Ganesha V15.10 for EZGH Files gateway hosts,
-as `15.10-1+ezgh2`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
+as `15.10-1+ezgh3`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
 names (and `/usr/bin/ganesha.nfsd`) of Ubuntu's packages. Ubuntu 26.04's `6.5-8` has
 neither RPC-with-TLS nor per-export QoS, and it is built against Ubuntu's Ceph 20.2.0
 libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build has:
@@ -272,11 +272,16 @@ libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build
   `deploy/proofs/image-upstream`, the build Files' proofs tested.
 - One patch, [`ganesha/patches`](ganesha/patches) (applied by `build.sh` with quilt):
   `ganesha.nfsd` exits at startup when `TLS_CONFIG` enables TLS and its certificate or key
-  doesn't load (V15.10 logs it and serves without TLS), and SIGHUP (or D-Bus
-  `reread_config`) rereads `TLS_CONFIG`: a certificate and key that load into a fresh
-  `SSL_CTX` are swapped in for new connections, established TLS sessions keep the one they
-  started with, and one that fails to load leaves the current certificate in place, with an
-  error logged. V15.10 reads `TLS_CONFIG` only at startup.
+  doesn't load (V15.10 logs it and serves without TLS). A CA file that doesn't load
+  (`TLS_CA_File` unset and nothing at the default `/etc/ganesha/tls/ca.crt`) isn't fatal:
+  client certificates are optional, so none is requested then; with a CA, clients without a
+  certificate are accepted as before. SIGHUP (or D-Bus `reread_config`) rereads
+  `TLS_CONFIG` first, before the blocks that can fail a reread, and when the certificate,
+  key or CA file changed (path, inode, size or times) a certificate and key that load into a
+  fresh `SSL_CTX` are swapped in for new connections; established TLS sessions keep the one
+  they started with, and one that fails to load leaves the current certificate in place,
+  with an error logged once. Turning TLS on or off takes a restart. V15.10 reads
+  `TLS_CONFIG` only at startup.
 - Upstream Ceph `20.2.4-1noble` client libraries from `download.ceph.com/debian-20.2.4`
   (checked against [`ganesha/ceph-release.asc`](ganesha/ceph-release.asc), fingerprint
   `08B7 3419 AC32 B4E9 66C1  A330 E84A C2C0 460F 3994`), the repository the hosts' OS
@@ -313,12 +318,15 @@ OpenSSL (not GnuTLS), and TLS and QoS are compiled in (`ganesha.nfsd` is run on 
 configs that it stops reading before it binds anything). Ganesha reads `TLS_CONFIG` and
 `QOS_DEFAULT_CONFIG` only when they are, so an out-of-range value in either must stop it,
 and a valid pair (TLS on with kTLS and a throwaway certificate, QoS on) must get past both
-with the RADOS URLs library loaded; the `rados_cluster` recovery backend must load; and a
-missing certificate must make `ganesha.nfsd` exit at startup. Then it starts a server on
-`127.0.0.1:32049` (`PORT`) with a throwaway certificate, checks that an `openssl s_client`
-handshake gets it, replaces the certificate and key files, sends SIGHUP and checks that a
-new handshake gets the new certificate, and that a broken certificate on SIGHUP leaves the
-new one in place. Run it on a host after an upgrade; the build runs it before anything is
+with the RADOS URLs library loaded; the `rados_cluster` recovery backend must load; a
+missing certificate must make `ganesha.nfsd` exit at startup, and a missing CA must not.
+Then it starts a server on `127.0.0.1:32049` (`PORT`) with a throwaway certificate as its
+own CA and, with `openssl s_client` presenting no client certificate: a handshake gets the
+certificate and an NFS NULL call gets its reply; a session opened before a SIGHUP that
+swaps in a new certificate still gets a NULL reply afterwards and closes cleanly, while new
+handshakes get the new certificate; a SIGHUP with unchanged files doesn't reload, a broken
+certificate is refused once and the current one kept, turning TLS off is refused once; and
+20 more reloads leave it serving the last certificate and exiting cleanly. Run it on a host after an upgrade; the build runs it before anything is
 published and publishes its output as `ganesha-check.txt`.
 [`ganesha/gateway-check.sh`](ganesha/gateway-check.sh) installs what a gateway host gets
 (the Ubuntu snapshot's resolute and noble `universe`, this repository, download.ceph.com,
@@ -327,7 +335,7 @@ from the published repositories and runs `check.sh` on it; the publish CI runs i
 publishing.
 
 `OUT=out ganesha/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
-takes minutes, and publishes from a `ganesha-v15.10-1+ezgh2` tag. arm64 builds too, as a
+takes minutes, and publishes from a `ganesha-v15.10-1+ezgh3` tag. arm64 builds too, as a
 smoke of the packaging, with `snapshot-apt.sh` pointed at `ports.ubuntu.com` (the snapshot
 has no arm64); only amd64 is published. The release files hold the source package
 (`.dsc`, `.orig.tar.xz`, `.debian.tar.xz`).

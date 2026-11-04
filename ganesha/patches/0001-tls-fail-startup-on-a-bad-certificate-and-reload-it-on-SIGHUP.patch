@@ -1,5 +1,5 @@
 From: Matthew Zhao <matthewzhaocc@gmail.com>
-Date: Wed, 4 Nov 2026 21:00:00 +0000
+Date: Wed, 4 Nov 2026 22:30:00 +0000
 Subject: [PATCH] tls: fail startup on a bad certificate and reload it on SIGHUP
 
 V15.10 ignores tls_init()'s result, so a TLS_CONFIG whose certificate
@@ -9,54 +9,94 @@ a restart.
 
 - nfs_set_param_from_conf() fails when TLS_CONFIG enables TLS and
   tls_init() fails, so ganesha.nfsd exits non-zero at startup.
-- reread_config() (SIGHUP, D-Bus reread_config) loads TLS_CONFIG again
-  and calls ntirpc's new tls_reload(), which builds a fresh SSL_CTX and
-  swaps it in under a rwlock that xp_tls_init_impl() holds (read) while
-  SSL_new() takes its reference. New connections get the new
-  certificate; established sessions keep the old SSL_CTX through their
-  own reference. If the new certificate or key fails to load, the
-  current SSL_CTX stays and an error is logged. OpenSSL only.
+- A CA file that doesn't load is not fatal: client certificates are
+  optional, so the server then requests none (SSL_VERIFY_NONE). Only
+  the certificate and key must load. With a CA, a client that sends no
+  certificate is still accepted, as before.
+- reread_config() (SIGHUP, D-Bus reread_config) rereads TLS_CONFIG
+  first, before LOG and EXPORT blocks that can fail the reread, with its
+  own error state. When the certificate, key or CA file changed (path,
+  device, inode, size, mtime or ctime) since the last load or attempt,
+  ntirpc's new tls_reload() builds a fresh SSL_CTX and swaps it in under
+  a mutex that xp_tls_init_impl() holds while SSL_new() takes its
+  reference. New connections get the new certificate; established
+  sessions keep the old SSL_CTX through their own reference. If it
+  fails to load, the current SSL_CTX stays and an error is logged once
+  for those files. Turning TLS on or off takes a restart (logged once).
+  OpenSSL only.
 - tls_cred_init() allocates its SSL ex_data index once, not per call.
 
 ---
 diff --git a/src/MainNFSD/nfs_init.c b/src/MainNFSD/nfs_init.c
-index 658e754..d3ddbf2 100644
+index 658e754..63c8180 100644
 --- a/src/MainNFSD/nfs_init.c
 +++ b/src/MainNFSD/nfs_init.c
-@@ -491,6 +491,32 @@ bool reread_config(void)
- 	handle_krb5_config_update(new_krb5_param);
+@@ -367,6 +367,52 @@ static void handle_krb5_config_update(nfs_krb5_parameter_t new_krb5_param)
+ 
  #endif /* _HAVE_GSSAPI */
  
 +#ifdef USE_TLS
-+	/* EZGH: reload TLS_CONFIG's certificate and key for new connections.
-+	 * Established sessions keep theirs; on any failure the current
-+	 * credential stays and the rest of the reread stands.
-+	 */
-+	if (tls_config.enabled) {
-+		tls_config_t new_tls = { 0 };
-+		char **strs[] = { &new_tls.cert_file, &new_tls.key_file,
-+				  &new_tls.ca_file, &new_tls.ciphers,
-+				  &new_tls.min_version };
++/*
++ * EZGH: reload TLS_CONFIG's certificate, key and CA for new connections when
++ * their files changed. Established sessions keep theirs; a failed load keeps
++ * the current one. TLS stays on or off as it started.
++ */
++static void reread_tls_config(config_file_t config_struct)
++{
++	static bool toggle_logged;
++	struct config_error_type tls_err;
++	tls_config_t new_tls = { 0 };
++	char **strs[] = { &new_tls.cert_file, &new_tls.key_file,
++			  &new_tls.ca_file, &new_tls.ciphers,
++			  &new_tls.min_version };
++	int rc;
 +
-+		(void)load_config_from_parse(config_struct, &tls_core, &new_tls,
-+					     true, &err_type);
-+		if (config_error_is_harmless(&err_type) && tls_reload(&new_tls))
++	if (!init_error_type(&tls_err))
++		return;
++	(void)load_config_from_parse(config_struct, &tls_core, &new_tls, true,
++				     &tls_err);
++	if (!config_error_is_harmless(&tls_err)) {
++		LogCrit(COMPONENT_CONFIG,
++			"Error while parsing TLS configuration: not reloaded");
++	} else if (new_tls.enabled != tls_config.enabled) {
++		if (!toggle_logged)
++			LogCrit(COMPONENT_CONFIG,
++				"TLS_CONFIG turns TLS %s, which takes a restart: not reloaded",
++				new_tls.enabled ? "on" : "off");
++		toggle_logged = true;
++	} else if (new_tls.enabled) {
++		rc = tls_reload(&new_tls);
++		if (rc > 0)
 +			LogEvent(COMPONENT_CONFIG,
 +				 "TLS_CONFIG reloaded: new connections use %s",
 +				 new_tls.cert_file);
-+		else
++		else if (rc < 0)
 +			LogCrit(COMPONENT_CONFIG,
 +				"TLS_CONFIG not reloaded: new connections keep the current certificate");
-+		for (size_t i = 0; i < ARRAY_SIZE(strs); i++)
-+			if (*strs[i] != NULL)
-+				gsh_free(*strs[i], MEM_COMP_CONFIG);
 +	}
++	(void)report_config_errors(&tls_err, NULL, config_errs_to_log);
++	for (size_t i = 0; i < ARRAY_SIZE(strs); i++)
++		if (*strs[i] != NULL)
++			gsh_free(*strs[i], MEM_COMP_CONFIG);
++}
 +#endif
 +
- 	(void)report_config_errors(&err_type, NULL, config_errs_to_log);
- 	config_Free(config_struct);
- 	LogDebug(COMPONENT_CONFIG, "Config reread successfully");
-@@ -791,8 +817,11 @@ int nfs_set_param_from_conf(config_file_t parse_tree,
+ bool reread_config(void)
+ {
+ 	int status = 0;
+@@ -399,6 +445,11 @@ bool reread_config(void)
+ 		goto reread_error;
+ 	}
+ 
++#ifdef USE_TLS
++	/* EZGH: first, so a bad block elsewhere never holds back a renewal */
++	reread_tls_config(config_struct);
++#endif
++
+ 	/* Update the logging configuration */
+ 	status = read_log_config(config_struct, &err_type);
+ 	if (status < 0) {
+@@ -791,8 +842,11 @@ int nfs_set_param_from_conf(config_file_t parse_tree,
  	}
  
  	/* Initialize TLS if enabled */
@@ -71,14 +111,15 @@ index 658e754..d3ddbf2 100644
  
  	/* Directory Services specific configuration */
 diff --git a/src/libntirpc/ntirpc/rpc/tls.h b/src/libntirpc/ntirpc/rpc/tls.h
-index 185ee9d..77ce440 100644
+index 185ee9d..2f49fd6 100644
 --- a/src/libntirpc/ntirpc/rpc/tls.h
 +++ b/src/libntirpc/ntirpc/rpc/tls.h
-@@ -51,6 +51,7 @@ typedef struct tls_config {
+@@ -51,6 +51,8 @@ typedef struct tls_config {
  
  extern tls_config_t tls_config;
  extern bool tls_init(tls_config_t *from_config);
-+extern bool tls_reload(tls_config_t *config);
++/* 1: reloaded, 0: files unchanged, -1: failed (the current credential stays) */
++extern int tls_reload(tls_config_t *config);
  extern void tls_cleanup(void);
  
  #endif /* USE_TLS */
@@ -95,34 +136,137 @@ index ca41784..f2beb71 100644
      # u*
      uaddr2taddr;
 diff --git a/src/libntirpc/src/tls_init.c b/src/libntirpc/src/tls_init.c
-index 32c7058..7040061 100644
+index 32c7058..2aec8df 100644
 --- a/src/libntirpc/src/tls_init.c
 +++ b/src/libntirpc/src/tls_init.c
-@@ -31,6 +31,19 @@ bool tls_init(tls_config_t *from_config)
+@@ -1,10 +1,48 @@
+ #include "tls.h"
+ #include "tls_transport.h"
++#include <limits.h>
++#include <sys/stat.h>
+ 
+ 
+ #ifdef USE_TLS
+ tls_config_t tls_config;
+ 
++/*
++ * EZGH: the certificate, key and CA files as last loaded (or tried), so a
++ * reload whose files are unchanged does nothing.
++ */
++struct tls_file_id {
++	char path[PATH_MAX];
++	dev_t dev;
++	ino_t ino;
++	off_t size;
++	struct timespec mtime;
++	struct timespec ctime;
++};
++static struct tls_file_id tls_loaded[3];
++static pthread_mutex_t tls_reload_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static void tls_file_ids(struct tls_file_id ids[3], const tls_config_t *c)
++{
++	const char *paths[3] = { c->cert_file, c->key_file, c->ca_file };
++	struct stat st;
++	int i;
++
++	memset(ids, 0, 3 * sizeof(ids[0]));
++	for (i = 0; i < 3; i++) {
++		if (paths[i] == NULL)
++			continue;
++		strlcpy(ids[i].path, paths[i], sizeof(ids[i].path));
++		if (stat(paths[i], &st) != 0)
++			continue;
++		ids[i].dev = st.st_dev;
++		ids[i].ino = st.st_ino;
++		ids[i].size = st.st_size;
++		ids[i].mtime = st.st_mtim;
++		ids[i].ctime = st.st_ctim;
++	}
++}
++
+ /* Initialize ntirpc TLS from configuration by keeping the local copy*/
+ bool tls_init(tls_config_t *from_config)
+ {
+@@ -26,11 +64,39 @@ bool tls_init(tls_config_t *from_config)
+ 		LogCritTLS(TLS_INIT, "Failed to initialize TLS");
+ 		return false;
+ 	}
++	pthread_mutex_lock(&tls_reload_lock);
++	tls_file_ids(tls_loaded, &tls_config);
++	pthread_mutex_unlock(&tls_reload_lock);
+ 
+ 	LogDebugTLS(TLS_INIT, "TLS initialized successfully");
  	return true;
  }
  
-+/* EZGH: load a reread TLS configuration's credential for new connections */
-+bool tls_reload(tls_config_t *config)
++/*
++ * EZGH: load a reread TLS configuration's credential for new connections if
++ * its files changed since the last load or attempt. Returns 1 when swapped
++ * in, 0 when unchanged, -1 when it failed to load (the current one stays).
++ */
++int tls_reload(tls_config_t *config)
 +{
-+	if (!config->enabled ||
-+	    !xprt_tls_reload(config->cert_file, config->key_file,
-+			     config->ca_file, config->ciphers,
-+			     config->min_version, config->ktls, config->debug)) {
-+		LogCritTLS(TLS_INIT, "Failed to reload TLS");
-+		return false;
++	struct tls_file_id ids[3];
++	int rc = 0;
++
++	pthread_mutex_lock(&tls_reload_lock);
++	tls_file_ids(ids, config);
++	if (memcmp(ids, tls_loaded, sizeof(ids)) != 0) {
++		memcpy(tls_loaded, ids, sizeof(ids));
++		rc = xprt_tls_reload(config->cert_file, config->key_file,
++				     config->ca_file, config->ciphers,
++				     config->min_version, config->ktls,
++				     config->debug) ? 1 : -1;
++		if (rc < 0)
++			LogCritTLS(TLS_INIT, "Failed to reload TLS");
 +	}
-+	return true;
++	pthread_mutex_unlock(&tls_reload_lock);
++	return rc;
 +}
 +
  /* Cleanup ntiprc TLS config*/
  void tls_cleanup(void)
  {
 diff --git a/src/libntirpc/src/tls_openssl.c b/src/libntirpc/src/tls_openssl.c
-index 1d0d862..2800473 100644
+index 1d0d862..8f9bd57 100644
 --- a/src/libntirpc/src/tls_openssl.c
 +++ b/src/libntirpc/src/tls_openssl.c
-@@ -196,7 +196,9 @@ tls_cred_t *tls_cred_init(const char *cert_file, const char *key_file,
+@@ -171,19 +171,24 @@ tls_cred_t *tls_cred_init(const char *cert_file, const char *key_file,
+ 
+ 	/*  Load CA certificates for client verification */
+ 	if (ca_file) {
++		/*
++		 * EZGH: client certificates are optional, so a CA file that
++		 * doesn't load only means none is requested (SSL_VERIFY_NONE).
++		 */
+ 		if (SSL_CTX_load_verify_locations(global_ctx, ca_file,
+ 						  NULL) != 1) {
+-			LogCritTLS(TLS_INIT, "Failed to load CA file %s: %s",
++			LogWarnTLS(TLS_INIT,
++				   "Failed to load CA file %s, client certificates are not requested: %s",
+ 				   ca_file, get_ssl_error());
+-			goto cleanup_global;
++			ERR_clear_error();
++		} else {
++			/*
++			 * Request client cert; accept connection regardless of
++			 * whether the client provides one.  tls_get_type()
++			 * decides post-handshake.
++			 */
++			SSL_CTX_set_verify(global_ctx, SSL_VERIFY_PEER, NULL);
+ 		}
+-
+-		/*
+-		 * Request client cert; accept connection regardless of
+-		 * whether the client provides one.  tls_get_type() decides
+-		 * post-handshake.
+-		 */
+-		SSL_CTX_set_verify(global_ctx, SSL_VERIFY_PEER, NULL);
+ 	} else {
+ 		/* try to use default system CA certificates */
+ 		if (SSL_CTX_set_default_verify_paths(global_ctx) != 1) {
+@@ -196,7 +201,9 @@ tls_cred_t *tls_cred_init(const char *cert_file, const char *key_file,
  
  	/* Set up an ex_data index for associating
  	 * tls_ctx_t with SSL objects */
@@ -134,7 +278,7 @@ index 1d0d862..2800473 100644
  		LogCritTLS(TLS_INIT, "Failed to get SSL ex_data index");
  		goto cleanup_global;
 diff --git a/src/libntirpc/src/tls_transport.c b/src/libntirpc/src/tls_transport.c
-index d1df005..ce0cbb5 100644
+index d1df005..6b4c944 100644
 --- a/src/libntirpc/src/tls_transport.c
 +++ b/src/libntirpc/src/tls_transport.c
 @@ -41,6 +41,8 @@
@@ -142,7 +286,7 @@ index d1df005..ce0cbb5 100644
  tls_cred_t *g_xprt_cred;
  bool g_tls_enabled;
 +/* EZGH: guards g_xprt_cred against xprt_tls_reload() swapping it */
-+static pthread_rwlock_t g_xprt_cred_lock = PTHREAD_RWLOCK_INITIALIZER;
++static pthread_mutex_t g_xprt_cred_lock = PTHREAD_MUTEX_INITIALIZER;
  
  bool xprt_tls_init(const char *cert_file, const char *key_file,
  		   const char *ca_file, const char *ciphers,
@@ -168,10 +312,10 @@ index d1df005..ce0cbb5 100644
 +			     min_version, ktls, debug);
 +	if (!cred)
 +		return false;
-+	pthread_rwlock_wrlock(&g_xprt_cred_lock);
++	pthread_mutex_lock(&g_xprt_cred_lock);
 +	old = g_xprt_cred;
 +	g_xprt_cred = cred;
-+	pthread_rwlock_unlock(&g_xprt_cred_lock);
++	pthread_mutex_unlock(&g_xprt_cred_lock);
 +	SSL_CTX_free(old);
 +	return true;
 +#else
@@ -186,10 +330,10 @@ index d1df005..ce0cbb5 100644
  	pthread_mutex_lock(&(xprt->xp_tls.tls_lock));
  	/* Create TLS context if not already created */
  	if (!xprt->xp_tls.tls_ctx) {
-+		pthread_rwlock_rdlock(&g_xprt_cred_lock);
++		pthread_mutex_lock(&g_xprt_cred_lock);
  		xprt->xp_tls.tls_ctx =
  			tls_ctx_init(xprt->xp_fd, g_xprt_cred, true);
-+		pthread_rwlock_unlock(&g_xprt_cred_lock);
++		pthread_mutex_unlock(&g_xprt_cred_lock);
  		if (!xprt->xp_tls.tls_ctx) {
  			LogCritTLS(TLS_HANDSHAKE,
  				   "Failed to initialize TLS context for fd %"
