@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Huth <thuth@redhat.com>
+Date: Tue, 15 Sep 2026 14:32:42 +0200
+Subject: [PATCH 3/6] hw/usb/hcd-xhci: Limit DMA transfers to plain memory
+
+XHCI is a complex controller, involving lots of descriptors that
+are written and read via DMA transfers. As some recent bugs like
+https://gitlab.com/qemu-project/qemu/-/work_items/3926 revealed,
+this can sometimes be exploited from the guest side to crash or
+stall QEMU.
+
+The code currently does DMA writes with the MEMTXATTRS_UNSPECIFIED
+attribute, i.e. the controller is allowed to write to other MMIO
+regions, too. However, in normal operation, this should not be
+necessary, all descriptors should reside in normal memory. So let's
+decrease the attack surface a little bit and limit the DMA writes
+to normal memory here.
+
+Signed-off-by: Thomas Huth <thuth@redhat.com>
+Message-ID: <20260915123242.549150-1-thuth@redhat.com>
+(cherry picked from commit 89e653b77369ad2d3e579139b1fa2567daa86a79)
+---
+ hw/usb/hcd-xhci.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/hw/usb/hcd-xhci.c b/hw/usb/hcd-xhci.c
+index 1d7c0363..80d2687f 100644
+--- a/hw/usb/hcd-xhci.c
++++ b/hw/usb/hcd-xhci.c
+@@ -520,6 +520,7 @@ static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
+     int i;
+     uint32_t tmp[5];
+     uint32_t n = len / sizeof(uint32_t);
++    const MemTxAttrs memtx_attrs = { .memory = true };
+ 
+     assert((len % sizeof(uint32_t)) == 0);
+     assert(n <= ARRAY_SIZE(tmp));
+@@ -527,8 +528,7 @@ static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
+     for (i = 0; i < n; i++) {
+         tmp[i] = cpu_to_le32(buf[i]);
+     }
+-    if (dma_memory_write(xhci->as, addr, tmp, len,
+-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
++    if (dma_memory_write(xhci->as, addr, tmp, len, memtx_attrs) != MEMTX_OK) {
+         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                       __func__);
+         xhci_die(xhci);
+@@ -615,6 +615,7 @@ static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
+     XHCIInterrupter *intr = &xhci->intr[v];
+     XHCITRB ev_trb;
+     dma_addr_t addr;
++    const MemTxAttrs memtx_attrs = { .memory = true };
+ 
+     ev_trb.parameter = cpu_to_le64(event->ptr);
+     ev_trb.status = cpu_to_le32(event->length | (event->ccode << 24));
+@@ -631,7 +632,7 @@ static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
+ 
+     addr = intr->er_start + TRB_SIZE*intr->er_ep_idx;
+     if (dma_memory_write(xhci->as, addr, &ev_trb, TRB_SIZE,
+-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
++                         memtx_attrs) != MEMTX_OK) {
+         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                       __func__);
+         xhci_die(xhci);
+@@ -2445,6 +2446,7 @@ static void xhci_detach_slot(XHCIState *xhci, USBPort *uport)
+ static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
+ {
+     dma_addr_t ctx;
++    const MemTxAttrs memtx_attrs = { .memory = true };
+ 
+     DPRINTF("xhci_get_port_bandwidth()\n");
+ 
+@@ -2453,9 +2455,9 @@ static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
+     DPRINTF("xhci: bandwidth context at "DMA_ADDR_FMT"\n", ctx);
+ 
+     /* TODO: actually implement real values here. This is 80% for all ports. */
+-    if (stb_dma(xhci->as, ctx, 0, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
++    if (stb_dma(xhci->as, ctx, 0, memtx_attrs) != MEMTX_OK ||
+         dma_memory_set(xhci->as, ctx + 1, 80, xhci->numports,
+-                       MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
++                       memtx_attrs) != MEMTX_OK) {
+         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory write failed!\n",
+                       __func__);
+         return CC_TRB_ERROR;

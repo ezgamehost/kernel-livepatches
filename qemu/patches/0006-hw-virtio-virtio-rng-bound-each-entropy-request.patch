@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Wed, 4 Nov 2026 18:00:00 -0800
+Subject: [PATCH 6/6] hw/virtio/virtio-rng: bound each entropy request
+
+virtio_rng_process() asks the backend for as many bytes as the guest's
+available buffers hold, up to the rate limit's quota, which defaults to
+INT64_MAX bytes per period. The backend g_malloc()s each request, so a
+guest that posts a 4 GiB buffer makes QEMU allocate 4 GiB, and an
+rng-random backend then reads the source into all of it.
+
+Ask for at most 64 KiB at a time. chr_read() already fills the guest's
+buffers with what it gets, pushing each with the length written, and
+calls virtio_rng_process() again while buffers remain, so a large
+buffer is returned partly filled and nothing is left waiting. Linux
+asks for 64 bytes per call and the Windows driver uses 4 KiB buffers
+on an 8-entry queue, so well-behaved guests never reach the bound.
+
+Upstream's 70074cc48f45 ("backends/rng: cap request size to avoid
+oversized allocation") caps the same size inside the backend.
+
+Assisted-by: LLM
+---
+ hw/virtio/virtio-rng.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/hw/virtio/virtio-rng.c b/hw/virtio/virtio-rng.c
+index 3df5d257..c204816a 100644
+--- a/hw/virtio/virtio-rng.c
++++ b/hw/virtio/virtio-rng.c
+@@ -14,6 +14,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/timer.h"
++#include "qemu/units.h"
+ #include "hw/virtio/virtio.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/virtio/virtio-rng.h"
+@@ -22,6 +23,12 @@
+ #include "qom/object_interfaces.h"
+ #include "trace.h"
+ 
++/*
++ * Guests ask for far less: Linux reads 64 bytes at a time, and the Windows
++ * driver posts 4 KiB buffers on an 8-entry queue (32 KiB).
++ */
++#define VIRTIO_RNG_MAX_REQUEST (64 * KiB)
++
+ static bool is_guest_ready(VirtIORNG *vrng)
+ {
+     VirtIODevice *vdev = VIRTIO_DEVICE(vrng);
+@@ -117,6 +124,12 @@ static void virtio_rng_process(VirtIORNG *vrng)
+     trace_virtio_rng_request(vrng, size, quota);
+ 
+     size = MIN(vrng->quota_remaining, size);
++    /*
++     * The guest sets the buffer sizes. The backend allocates the request,
++     * so ask for a bounded amount; chr_read() fills what it gets and asks
++     * again while buffers remain.
++     */
++    size = MIN(size, VIRTIO_RNG_MAX_REQUEST);
+     if (size) {
+         rng_backend_request_entropy(vrng->rng, size, chr_read, vrng);
+     }

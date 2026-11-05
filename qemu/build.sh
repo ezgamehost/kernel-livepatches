@@ -11,7 +11,7 @@
 set -euo pipefail
 
 UBUNTU_VER=1:10.2.1+ds-1ubuntu3.2 # as pinned in the hosts' OS releases
-DEB_VER=10.2.1+ds-1ubuntu3.2+ezgh1 # the tag is qemu-v$DEB_VER
+DEB_VER=10.2.1+ds-1ubuntu3.2+ezgh2 # the tag is qemu-v$DEB_VER
 VERSION=1:$DEB_VER
 # What a hypervisor installs from this source; the rest stay Ubuntu's. qemu-system-data
 # (Architecture: all) is only required >> 1:10.2.1+ds~, so Ubuntu's copy keeps working.

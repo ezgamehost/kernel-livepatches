@@ -232,7 +232,7 @@ tree to get.ezghcloud.com.
 ## QEMU
 
 The same apt repository carries Ubuntu's QEMU rebuilt with the patches in
-[`qemu/patches`](qemu/patches), as `1:10.2.1+ds-1ubuntu3.2+ezgh1`: the packages a
+[`qemu/patches`](qemu/patches), as `1:10.2.1+ds-1ubuntu3.2+ezgh2`: the packages a
 hypervisor installs from the `qemu` source (`qemu-system-x86`, `-common`, `-gui`,
 `-modules-opengl`, `-modules-spice`, `qemu-block-extra`, `qemu-utils`). Ubuntu's
 `qemu-system-data` stays as it is. Hosts get them as exact pins in their OS release.
@@ -242,6 +242,25 @@ hypervisor installs from the `qemu` source (`qemu-system-x86`, `-common`, `-gui`
   guest trimming free space used up its volume's MB/s budget and its writes waited for
   seconds behind the trims. A discard now counts as one request of no bytes: still
   against the IOPS limits, never against the bps ones.
+- [`0002`](qemu/patches/0002-hw-usb-hcd-xhci-Set-reentrancy-guard-in-timer-functi.patch)–[`0004`](qemu/patches/0004-hw-usb-hcd-xhci-More-reentrancy-guard-fixes-for-the-.patch),
+  upstream f91b0544fe1f, 89e653b77369 and cfa70f3a82f5, unchanged: qemu-xhci ran its timers
+  (0002, CVE-2026-17588) and its USB port and bus callbacks (0004, CVE-2026-111819:
+  transfer completion, endpoint and port wakeup, attach and detach, which the USB tablet
+  reaches on every input event) without the device's reentrancy guard, so an event-ring
+  write or an MSI-X message the guest aimed at the controller's own doorbell could run
+  commands that free state the outer call still uses. 0003 limits the controller's
+  descriptor and event writes to RAM. 0004 is needed as well as 0002: MSI-X writes are not
+  descriptor writes, so 0003 does not cover them.
+- [`0005`](qemu/patches/0005-hw-char-virtio-serial-bus-fix-guest-triggerable-OOM-.patch),
+  posted upstream and not yet merged: virtio-serial allocated and filled a buffer as long
+  as the guest's control-queue descriptors claimed (up to 1024 × 4 GiB, aliasing the same guest pages), to read eight
+  bytes from it. It now copies only the eight-byte control header; every message the
+  guest agent's driver sends is that header, and is handled as before.
+- [`0006`](qemu/patches/0006-hw-virtio-virtio-rng-bound-each-entropy-request.patch):
+  virtio-rng asked its backend for as many bytes as the guest's buffers held (the rate
+  limit is unset), and the backend allocates each request. It now asks for at most 64 KiB
+  at a time; a larger buffer comes back partly filled and further requests follow while
+  buffers remain. Upstream caps the same size in the backend (70074cc48f45).
 
 [`qemu/check.sh`](qemu/check.sh) tests this with `qemu-io` over a `null-co` disk (no
 guest or KVM): a 4 KiB write after a 100 MiB discard through a 10 MB/s group must
@@ -249,13 +268,35 @@ finish in under 1 s (stock QEMU: 10.4 s), and 30 discards through a 10 IOPS grou
 take at least 1.5 s. Run it on a host after an upgrade; the build runs it against the
 built `qemu-utils` before anything is published.
 
+[`qemu/guest-check.sh`](qemu/guest-check.sh) boots a disposable Ubuntu guest under the
+installed QEMU and libvirt with hostd's device set and checks normal service from the
+patched devices: the USB tablet enumerates, delivers pointer events, and a second tablet
+hot-plugs and unplugs; the guest agent answers before and after it restarts; 1 MiB reads
+from virtio-rng; and QEMU logs no blocked re-entrant I/O. It sends no malformed requests.
+Run it on a test host (root, KVM, `libvirt-daemon-system`, `cloud-image-utils`), never on
+a hypervisor serving instances.
+
 `OUT=out qemu/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
 takes hours, since Ubuntu's rules build every target, and publishes from a
-`qemu-v10.2.1+ds-1ubuntu3.2+ezgh1` tag. The release files hold the source package
+`qemu-v10.2.1+ds-1ubuntu3.2+ezgh2` tag. The release files hold the source package
 (`.dsc`, `.debian.tar.xz`, the patches); its `qemu_10.2.1+ds.orig.tar.xz` is
 Ubuntu's, from the same snapshot.
 
-A running VM keeps the QEMU it started with until it restarts or migrates.
+A running VM keeps the QEMU it started with until it restarts or migrates: upgrading the
+package fixes nothing for it, and a guest reboot keeps the same QEMU process. After an
+upgrade, every domain whose QEMU started before the install still runs the old build, and
+needs a stop/start or a live migration to an upgraded host.
+[`qemu/running-check.sh <version>`](qemu/running-check.sh) finds them on a host
+(read-only; the install time is the mtime of dpkg's file list for `qemu-system-x86`): it fails unless `qemu-system-x86` is at `<version>` and no running QEMU started
+before it was installed, and names each stale domain.
+
+Rolling out a new `+ezghN`: register an OS release for each cell that copies the cell's
+current one and changes only the seven pins above (`qemu-system-data` stays Ubuntu's),
+roll it out cell by cell, run `qemu/running-check.sh` on every host, then migrate or
+stop/start each stale domain until it passes. `+ezgh1` and `+ezgh2` live-migrate to each
+other both ways with hostd's device set (they change no migration state); a cell with a single hypervisor
+can only stop/start. A guest-facing fix protects an instance only once its own QEMU
+restarted on the new build.
 
 ## NFS-Ganesha
 
