@@ -75,6 +75,9 @@ difference:
   Its apt sources point only at the Ubuntu snapshot
   `https://snapshot.ubuntu.com/ubuntu/20261018T000000Z` (resolute, -updates,
   -security). All packages are checked against the Ubuntu archive signature.
+  EZGH's CI (`SNAPSHOT_CACHE_TOKEN` set) fetches the same snapshot paths through its
+  cache, `snapshot-cache.ezghcloud.com`, and falls back to snapshot.ubuntu.com when the
+  cache doesn't answer; the signature and hash checks are the same either way.
 - Toolchain: `apt-get build-dep linux=7.0.0-38.38`. The build asserts gcc-15
   `15.2.0-16ubuntu1` (`x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0`)
   and binutils `2.46-3ubuntu2` (`GNU ld (GNU Binutils for Ubuntu) 2.46`), the
