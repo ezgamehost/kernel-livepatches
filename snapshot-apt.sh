@@ -9,6 +9,15 @@ if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
 	[ -s /hostca.pem ] || { echo "error: mount the host CA bundle at /hostca.pem" >&2; exit 1; }
 	echo 'Acquire::https::CAInfo "/hostca.pem";' > /etc/apt/apt.conf.d/99hostca
 fi
+# snapshot.ubuntu.com answers 5xx at times: retry each download with backoff, and don't
+# wait on a stalled connection for apt's default 120 s.
+cat > /etc/apt/apt.conf.d/80retries <<'X'
+Acquire::Retries "10";
+Acquire::Retries::Delay "true";
+Acquire::Retries::Delay::Maximum "60";
+Acquire::http::Timeout "60";
+Acquire::https::Timeout "60";
+X
 rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*
 cat > /etc/apt/sources.list.d/snapshot.sources <<X
 Types: deb deb-src
