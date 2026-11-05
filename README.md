@@ -301,7 +301,7 @@ restarted on the new build.
 ## NFS-Ganesha
 
 The same apt repository carries upstream NFS-Ganesha V15.10 for EZGH Files gateway hosts,
-as `15.10-1+ezgh6`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
+as `15.10-1+ezgh7`: `nfs-ganesha`, `nfs-ganesha-ceph` and `nfs-ganesha-rados-grace`, the
 names (and `/usr/bin/ganesha.nfsd`) of Ubuntu's packages. Ubuntu 26.04's `6.5-8` has
 neither RPC-with-TLS nor per-export QoS, and it is built against Ubuntu's Ceph 20.2.0
 libraries, which can't read the AES256K keys a 20.2.4 cluster issues. This build has:
@@ -397,7 +397,7 @@ from the published repositories and runs `check.sh` on it; the publish CI runs i
 publishing.
 
 `OUT=out ganesha/build.sh` in `ubuntu:26.04` (amd64, root, the host CA at `/hostca.pem`)
-takes minutes, and publishes from a `ganesha-v15.10-1+ezgh6` tag. arm64 builds too, as a
+takes minutes, and publishes from a `ganesha-v15.10-1+ezgh7` tag. arm64 builds too, as a
 smoke of the packaging, with `snapshot-apt.sh` pointed at `ports.ubuntu.com` (the snapshot
 has no arm64); only amd64 is published. The release files hold the source package
 (`.dsc`, `.orig.tar.xz`, `.debian.tar.xz`).

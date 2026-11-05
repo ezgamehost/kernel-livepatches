@@ -1,3 +1,11 @@
+nfs-ganesha (15.10-1+ezgh7) resolute; urgency=medium
+
+  * Rebuild of +ezgh6 (same patches 0001-0004), whose publish never got
+    through snapshot.ubuntu.com's 5xx errors and Docker Hub's rate limit; the
+    build now retries apt downloads.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Thu, 05 Nov 2026 07:30:00 +0000
+
 nfs-ganesha (15.10-1+ezgh6) resolute; urgency=medium
 
   * d/p/0004-recovery-a-node-joining-another-node-s-grace-expects-no-reclaims.patch:
