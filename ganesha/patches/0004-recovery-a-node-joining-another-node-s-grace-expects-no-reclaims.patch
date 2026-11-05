@@ -1,0 +1,51 @@
+From: Matthew Zhao <matthewzhaocc@gmail.com>
+Date: Thu, 5 Nov 2026 02:00:00 +0000
+Subject: [PATCH] recovery: a node joining another node's grace expects no
+ reclaims
+
+In a rados_cluster cluster, a node that didn't restart enters grace from
+its reaper when another node starts a cluster-wide one
+(rados_cluster_maybe_start_grace -> nfs_start_grace(EVENT_JUST_GRACE)).
+nfs_start_grace() loads no client list for EVENT_JUST_GRACE, and nothing
+clears the one from the node's own last grace period (only a grace
+period this node starts does), so nfs_try_lift_grace() compares the
+RECLAIM_COMPLETE count and the client count left from then. Its clients
+never lost their state and send no reclaims, so unless those old counts
+happen to match, the node holds grace for the full Grace_Period after
+the restarted node's clients have reclaimed, and refuses its own
+clients' new opens with NFS4ERR_GRACE all that time.
+
+When a clustered node (the backend has maybe_start_grace) enters a grace
+period with EVENT_JUST_GRACE, clear the client list and the
+RECLAIM_COMPLETE count, and don't hold one extra reaper tick for having
+no clients. Lifting still needs try_lift_grace, which for rados_cluster
+succeeds only when no node in the grace database needs grace: the
+restarted node keeps its NEED flag until its own clients have reclaimed
+(or its Grace_Period ends), so nothing is granted to other clients
+while those can still reclaim. A restarting node (nfs_start_grace(NULL),
+which loads its client list) and takeovers (other events) are unchanged.
+
+---
+--- a/src/SAL/nfs4_recovery.c
++++ b/src/SAL/nfs4_recovery.c
+@@ -752,6 +752,20 @@
+ 	if (!gsp && !was_grace) {
+ 		nfs4_cleanup_clid_entries();
+ 		nfs4_recovery_load_clids(NULL);
++	} else if (gsp && gsp->event == EVENT_JUST_GRACE && !was_grace &&
++		   recovery_backend->maybe_start_grace) {
++		/*
++		 * EZGH: a clustered node joining a grace period another node
++		 * started. It didn't restart: its clients kept their state and
++		 * won't reclaim, so expect no reclaims (the counts left from
++		 * its own last grace period would hold it for the full
++		 * Grace_Period) and don't hold for the zero-clients case. The
++		 * restarted node's NEED flag in the cluster's grace database
++		 * still keeps every node in grace (try_lift_grace) until that
++		 * node's clients have reclaimed.
++		 */
++		nfs4_cleanup_clid_entries();
++		handling_zero_clients = false;
+ 	} else if (gsp && gsp->event != EVENT_JUST_GRACE) {
+ 		/*
+ 		 * if called from failover code and given a nodeid, then this

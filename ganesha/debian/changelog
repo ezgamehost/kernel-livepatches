@@ -1,3 +1,14 @@
+nfs-ganesha (15.10-1+ezgh6) resolute; urgency=medium
+
+  * d/p/0004-recovery-a-node-joining-another-node-s-grace-expects-no-reclaims.patch:
+    a rados_cluster node that joins a grace period another node started (it
+    didn't restart) clears the client and RECLAIM_COMPLETE counts left from
+    its own last grace period, so it lifts as soon as the cluster's grace
+    database has no node needing grace instead of holding the full
+    Grace_Period.
+
+ -- EZGH Cloud <matthewzhaocc@gmail.com>  Thu, 05 Nov 2026 02:00:00 +0000
+
 nfs-ganesha (15.10-1+ezgh5) resolute; urgency=medium
 
   * d/p/0002: addrs.<nodeid> starts with "host <hostname>" and "pid <pid>"
